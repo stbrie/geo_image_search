@@ -1,0 +1,5 @@
+geo_image_search.py README
+
+A simple script that recurses a given file folder to find geo-tagged images
+that are within a half-mile of a given address.  Additional command-line
+options do other stuff.
