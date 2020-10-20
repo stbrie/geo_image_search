@@ -8,6 +8,7 @@ from shutil import copyfile
 from exif import Image
 from geopy.geocoders import Nominatim
 from geopy import distance
+import pprint
 
 class GeoImageSearch: # pylint: disable=too-many-instance-attributes
     def __init__(self):
@@ -111,8 +112,13 @@ class GeoImageSearch: # pylint: disable=too-many-instance-attributes
 
     def startup(self):
         self.get_opts()
+        pp = pprint.PrettyPrinter(indent=4)
+        
         print("User address is " + str(self.address))
         self.location = self.geolocator.geocode(self.address)
+        if not self.location:
+            print("User address does not return a valid location object.  Exiting.")
+            quit()
         self.search_coords = (self.location.latitude, self.location.longitude)
         print("Nominatim address: " + self.location.address)
         print("Lat, Long: " + str(self.location.latitude), str(self.location.longitude))
@@ -133,7 +139,7 @@ if __name__ == '__main__':
             print(dirpath)
         if gis.od_re.search(dirpath):
             print("Skipping output_directory..." + dirpath)
-            next
+            continue
 
         for file_name in filenames:
             if gis.jpeg_file_regex.search(file_name):
