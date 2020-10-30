@@ -81,34 +81,38 @@ class GeoImageSearch: # pylint: disable=too-many-instance-attributes
             sys.exit(0)
     def set_root_images_directory(self):
         if not self.root_images_directory:
-            self.root_images_directory = '/mnt/c/Documents and Settings/jack_local/Pictures/Camera Dump/'
+            self.usage("No images root directory specified.  --images-root-directory is not optional")
         if not self.ts_re.search(self.root_images_directory):
             self.root_images_directory = self.root_images_directory + '/'
+
     def set_output_directory(self):
         if not self.user_output_directory:
-            print('No output directory specified.  Results not saved.')
-            self.usage() # exit for now.  I don't want to overly complicate flow logic.
+            self.usage('No output directory specified.  Results not saved.')
+            
         if self.verbose:
             print('User output directory: ' + self.user_output_directory)
+
         od_stripped = self.fs_re.sub("_",self.user_output_directory)
         if self.verbose:
-            print('Setting od_stripped: ' + od_stripped)
+            print('   Setting stripped output directory: ' + od_stripped)
+            
         self.od_re = re.compile(od_stripped)
         self.output_directory = self.root_images_directory + "geo_loc/" + od_stripped + "/"
+        if self.verbose:
+            print('   User output directory: ' + self.output_directory)
 
     def set_directories(self):
         self.set_root_images_directory()
         self.set_output_directory()
         if self.verbose:
-            print("output_directory: " + self.output_directory)
-            print("root images_directory: " + self.root_images_directory)
+            print("Images Root Directory: " + self.root_images_directory)
         if not os.path.exists(self.output_directory):
             if self.verbose:
-                print("Output directory does not exist.")
-                print("Creating " + self.output_directory)
+                print("   Output directory does not exist.")
+                print("   Creating " + self.output_directory)
             os.makedirs(self.output_directory)
         else:
-            print("Output directory exists.")
+            print("   Output directory exists.")
 
     def startup(self):
         self.get_opts()
@@ -116,9 +120,11 @@ class GeoImageSearch: # pylint: disable=too-many-instance-attributes
         
         print("User address is " + str(self.address))
         self.location = self.geolocator.geocode(self.address)
+
         if not self.location:
-            print("User address does not return a valid location object.  Exiting.")
-            quit()
+            # TODO: geopy has exceptions we could use.  That might be more useful than this.
+            self.usage("User address does not return a valid location object.")
+            
         self.search_coords = (self.location.latitude, self.location.longitude)
         print("Nominatim address: " + self.location.address)
         print("Lat, Long: " + str(self.location.latitude), str(self.location.longitude))
@@ -153,17 +159,20 @@ if __name__ == '__main__':
                         lat_deg_dec = lat_deg_dec + my_image.gps_latitude[1]/60
                         lat_deg_dec = lat_deg_dec + my_image.gps_latitude[2]/3600
                     except AttributeError:
-                    # print (imagename + " has no latitude.")
-                        pass
+                        if gis.verbose:
+                            print (imagename + " has no latitude.")
+                        
                     try:
                         long_deg_dec = my_image.gps_longitude[0]
                         long_deg_dec = long_deg_dec + my_image.gps_longitude[1]/60
                         long_deg_dec = long_deg_dec + my_image.gps_longitude[2]/3600
                     except AttributeError:
-                    # print (imagename + " has no longitude.")
-                        pass
+                        if gis.verbose:
+                            print (imagename + " has no longitude.")
+                            
                     if lat_deg_dec and long_deg_dec:
-                        long_deg_dec = -1 * long_deg_dec
+                        long_deg_dec = -1 * long_deg_dec # TODO: Make this not stupid.
+                        
                         image_loc = (lat_deg_dec, long_deg_dec)
                         if distance.distance(gis.search_coords, image_loc).miles < .5:
                             if gis.verbose:
@@ -178,11 +187,11 @@ if __name__ == '__main__':
                                 copyfile(imagename, destination)
                         else:
                             if gis.verbose:
-                                print("- " +
+                                print("X " +
                                       gis.loc_format.format(file_name,
                                                             lat_deg_dec,
                                                             long_deg_dec,
                                                             distance.distance(gis.search_coords,
                                                                               image_loc).miles))
                     else:
-                        pass
+                        pass: # no lattitude and longitude from the image.  Can't calculate distance.
