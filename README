@@ -1,8 +1,13 @@
 geo_image_search.py README
 
 A simple script that recurses a given file folder to find geo-tagged images
-that are within a half-mile of a given address.  Additional command-line
-options do other stuff.
+that are within a half-mile of a given address.  Obviously, if your images
+do not have geo-location information, this script help you.  Hopefully it's
+useful to you, though.
+
+Additional command-line options do other stuff.
+
+The author uses this on a windows machine with LSB/debian.  
 
 Requires: geopy, exif
 
