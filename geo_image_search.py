@@ -52,6 +52,7 @@ from typing import Dict, List
 try:
     from fastkml.kml import KML
     from fastkml.containers import Document, Folder
+    from fastkml.views import LookAt
     from fastkml.features import Placemark
     from pygeoif.geometry import Point
 
@@ -1041,7 +1042,7 @@ resume = false          # Resume from previous interrupted search
 
                 # Add to KML results if KML export is enabled
                 self.add_kml_result(
-                    filename, dir_path, lat_deg_dec, long_deg_dec, distance_miles, None
+                    filename, dir_path, lat_deg_dec, long_deg_dec, distance_miles, ""
                 )
 
                 return True  # Indicate a match was found
@@ -1158,32 +1159,41 @@ resume = false          # Resume from previous interrupted search
             # Create folder for search area
             for folder_name, results in self.kml_results.items():
                 cluster_name = self.get_cluster_name_by_folder(folder_name)
+
                 search_folder = Folder(
-                    name=cluster_name, description=f"Search center and radius ({self.radius} miles)"
+                    name=cluster_name,
+                    description=f"Search center and radius ({self.radius} miles)",
                 )
                 doc.append(search_folder)
 
                 # Add search center point
                 if self.search_coords:
+                    lookat = LookAt(
+                        range=200, latitude=self.search_coords[0], longitude=self.search_coords[1]
+                    )
                     center_point = Placemark(
                         name="Search Center",
                         description=f"Search center at {self.search_coords[0]:.6f}, {self.search_coords[1]:.6f}",
                         geometry=Point(self.search_coords[1], self.search_coords[0], 0),
+                        view=lookat,
                     )  # lon, lat
                     search_folder.append(center_point)
                 counter = 0
+
                 for res in results:
                     counter += 1
                     description = (
                         f"<![CDATA[Found File {counter}"
                         f'<img style="max-width:500px;" src="file:///{self.get_kml_image_path(res['path'])}">]]>'
                     )
+                    longi = float(res.get("longitude", 0))
+                    lati = float(res.get("latitude", 0))
+                    lookat = LookAt(range=50, latitude=lati, longitude=longi)
                     k_point = Placemark(
                         name=res.get("filename"),
                         description=description,
-                        geometry=Point(
-                            float(res.get("longitude", 0)), float(res.get("latitude", 0)), 0
-                        ),
+                        geometry=Point(longi, lati, 0),
+                        view=lookat,
                     )
                     search_folder.append(k_point)
 
@@ -1383,10 +1393,31 @@ resume = false          # Resume from previous interrupted search
                     print(
                         f"  -> Adding to existing cluster: {cluster['name']} ({cluster_distance:.2f}mi from center)"
                     )
+                if "coords" not in cluster:
+                    cluster["coords"] = []
+                cluster["coords"].append(image_coords)
                 return cluster["folder_path"]
 
         # Create a new cluster
-        cluster_name = f"Cluster_{len(self.location_clusters) + 1}_{lat:.3f}_{lon:.3f}"
+        coords_list = [image_coords]
+        avg_lat = sum(c[0] for c in coords_list) / len(coords_list)
+        avg_lon = sum(c[1] for c in coords_list) / len(coords_list)
+
+        placename = None
+        try:
+            location = self.geolocator.reverse(f"{avg_lat},{avg_lon}", exactly_one=True)
+            if location and location.address:
+                placename = (
+                    location.raw.get("address", {}).get("neighbourhood")
+                    or location.raw.get("address", {}).get("suburb")
+                    or location.raw.get("address", {}).get("city")
+                    or location.address.split(",")[0]
+                )
+        except Exception as e:
+            if self.verbose:
+                print(f"Reverse geocoding failed for cluster center: {e}")
+
+        cluster_name = placename or f"Cluster_{len(self.location_clusters) + 1}_{lat:.3f}_{lon:.3f}"
         safe_name = self.sanitize_folder_name(cluster_name)
         cluster_folder = os.path.join(self.output_directory, safe_name)
 
