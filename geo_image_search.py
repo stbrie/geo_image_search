@@ -208,10 +208,18 @@ date_to = "2024-12-31"   # Filter images to this date (YYYY-MM-DD)
 # Processing behavior
 resume = false          # Resume from previous interrupted search
 
+[folder_kml]
+# Independent KML export from existing folders (bypasses normal search)
+# folder_path = "/path/to/photos"     # Default folder to scan for GPS images
+# output_kml_path = "images.kml"      # Default KML output filename
+# recursive = true                    # Search subfolders recursively
+# verbose = false                     # Enable verbose output for folder export
+
 # Example configurations:
 # For vacation photos: radius = 0.5, save_addresses = true
 # For large archives: find_only = true, resume = true, verbose = true
 # For specific events: date_from and date_to with precise coordinates
+# For folder KML export: folder_path = "/photos", recursive = true, output_kml_path = "vacation.kml"
 """
 
         try:
@@ -279,6 +287,21 @@ resume = false          # Resume from previous interrupted search
         proc_config = config_data.get("processing", {})
         if not args.resume and proc_config.get("resume", False):
             args.resume = proc_config["resume"]
+
+        # Folder KML export settings
+        folder_kml_config = config_data.get("folder_kml", {})
+        if not hasattr(args, 'export_folder_kml') or not args.export_folder_kml:
+            if "folder_path" in folder_kml_config:
+                args.export_folder_kml = folder_kml_config["folder_path"]
+        if not hasattr(args, 'output_kml') or not args.output_kml:
+            if "output_kml_path" in folder_kml_config:
+                args.output_kml = folder_kml_config["output_kml_path"]
+        if not hasattr(args, 'no_recursive') or not args.no_recursive:
+            if folder_kml_config.get("recursive", True) is False:
+                args.no_recursive = True
+        # Verbose can be overridden by folder_kml section for folder export mode
+        if not args.verbose and folder_kml_config.get("verbose", False):
+            args.verbose = folder_kml_config["verbose"]
 
     def get_opts(self):
         """
@@ -446,14 +469,16 @@ resume = false          # Resume from previous interrupted search
             self.create_sample_config(args.create_config)
             sys.exit(0)
 
+        # Load configuration file first to check for folder KML export defaults
+        config_path = args.config if hasattr(args, "config") else None
+        self.config_data = self.load_config_file(config_path)
+        
+        # Merge config file settings with command line arguments early to get folder KML defaults
+        if self.config_data:
+            self.merge_config_with_args(self.config_data, args)
+        
         # Handle folder KML export mode early (independent of normal search)
-        if args.export_folder_kml:
-            # Load basic configuration for verbose mode and date filters
-            config_path = args.config if hasattr(args, "config") else None
-            self.config_data = self.load_config_file(config_path)
-            if self.config_data:
-                self.merge_config_with_args(self.config_data, args)
-            
+        if hasattr(args, 'export_folder_kml') and args.export_folder_kml:
             # Set required attributes for folder export
             self.verbose = getattr(args, 'verbose', False)
             self.date_from = None
@@ -471,18 +496,26 @@ resume = false          # Resume from previous interrupted search
                     print(f"Error: Invalid date format for --date-to: {args.date_to}. Use YYYY-MM-DD")
                     sys.exit(12)
             
+            # Apply GPS accuracy filters from config
+            self.max_gps_error = getattr(args, 'max_gps_error', None)
+            self.max_dop = getattr(args, 'max_dop', None)
+            
             # Run folder KML export and exit
-            recursive = not args.no_recursive
-            success = self.export_kml_from_folder(args.export_folder_kml, args.output_kml, recursive)
+            recursive = not getattr(args, 'no_recursive', False)
+            output_kml = getattr(args, 'output_kml', None)
+            success = self.export_kml_from_folder(args.export_folder_kml, output_kml, recursive)
             sys.exit(0 if success else 1)
 
-        # Load configuration file first
-        config_path = args.config if hasattr(args, "config") else None
-        self.config_data = self.load_config_file(config_path)
-
-        # Merge config file settings with command line arguments
-        if self.config_data:
-            self.merge_config_with_args(self.config_data, args)
+        # Configuration already loaded above for folder KML mode
+        # Re-merge if we didn't take the folder KML path
+        if not (hasattr(args, 'export_folder_kml') and args.export_folder_kml):
+            if not hasattr(self, 'config_data'):
+                config_path = args.config if hasattr(args, "config") else None
+                self.config_data = self.load_config_file(config_path)
+            
+            # Merge config file settings with command line arguments
+            if self.config_data:
+                self.merge_config_with_args(self.config_data, args)
 
         # Validate required arguments after config file merging
         if not args.root:
@@ -1005,6 +1038,27 @@ resume = false          # Resume from previous interrupted search
                 
                 if lat_deg_dec is None or long_deg_dec is None:
                     return None
+                
+                # Apply GPS accuracy filters if set
+                if self.max_gps_error is not None:
+                    try:
+                        gps_h_positioning_error = getattr(my_image, 'gps_h_positioning_error', None)
+                        if gps_h_positioning_error and float(gps_h_positioning_error) > self.max_gps_error:
+                            if self.verbose:
+                                print(f"  -> {filename}: GPS horizontal error {gps_h_positioning_error}m exceeds limit {self.max_gps_error}m")
+                            return None
+                    except (AttributeError, ValueError, TypeError):
+                        pass
+                        
+                if self.max_dop is not None:
+                    try:
+                        gps_dop = getattr(my_image, 'gps_dop', None)
+                        if gps_dop and float(gps_dop) > self.max_dop:
+                            if self.verbose:
+                                print(f"  -> {filename}: GPS DOP {gps_dop} exceeds limit {self.max_dop}")
+                            return None
+                    except (AttributeError, ValueError, TypeError):
+                        pass
                 
                 # Extract date information
                 date_taken = None
