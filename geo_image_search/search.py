@@ -2,15 +2,9 @@
 
 import logging
 
-try:
-    from geopy.distance import distance
-    from geopy.geocoders import Nominatim
-    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-except ImportError:
-    distance = None
-    Nominatim = None
-    GeocoderTimedOut = Exception
-    GeocoderServiceError = Exception
+from geopy.distance import distance
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 from .constants import Constants
 from .exceptions import ConfigurationError, GPSDataError

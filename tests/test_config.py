@@ -310,15 +310,26 @@ class TestConfigurationManager:
         This test documents valid configuration combinations
         and shows configurations that pass validation.
         """
+        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig
+        
         search_config = SearchConfig(address="Test City")
         directory_config = DirectoryConfig(root="/test", output_directory="/output")
         output_config = OutputConfig(save_addresses=True)
         filter_config = FilterConfig()
+        processing_config = ProcessingConfig()
+        folder_kml_config = FolderKMLConfig()
+        
+        app_config = ApplicationConfig(
+            search=search_config,
+            directory=directory_config,
+            output=output_config,
+            filter=filter_config,
+            processing=processing_config,
+            folder_kml=folder_kml_config,
+        )
         
         # Should not raise any exceptions
-        self.config_manager._validate_configuration(
-            search_config, directory_config, output_config, filter_config
-        )
+        self.config_manager._validate_configuration(app_config)
 
     @pytest.mark.unit
     def test_validate_configuration_save_addresses_error(self):
@@ -328,15 +339,26 @@ class TestConfigurationManager:
         This test documents the requirement that save_addresses
         needs an output directory specified.
         """
+        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig
+        
         search_config = SearchConfig()
         directory_config = DirectoryConfig(output_directory=None)
         output_config = OutputConfig(save_addresses=True)
         filter_config = FilterConfig()
+        processing_config = ProcessingConfig()
+        folder_kml_config = FolderKMLConfig()
+        
+        app_config = ApplicationConfig(
+            search=search_config,
+            directory=directory_config,
+            output=output_config,
+            filter=filter_config,
+            processing=processing_config,
+            folder_kml=folder_kml_config,
+        )
         
         with pytest.raises(ConfigurationError) as exc_info:
-            self.config_manager._validate_configuration(
-                search_config, directory_config, output_config, filter_config
-            )
+            self.config_manager._validate_configuration(app_config)
         
         assert "save_addresses requires" in str(exc_info.value)
         assert "output_directory" in str(exc_info.value)
@@ -349,17 +371,28 @@ class TestConfigurationManager:
         This test documents requirements for location-based sorting
         including output directory and find_only conflicts.
         """
+        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig
+        
         search_config = SearchConfig()
         filter_config = FilterConfig()
+        processing_config = ProcessingConfig()
+        folder_kml_config = FolderKMLConfig()
         
         # Test sort_by_location with find_only conflict
         directory_config = DirectoryConfig(sort_by_location=True, find_only=True)
         output_config = OutputConfig()
         
+        app_config = ApplicationConfig(
+            search=search_config,
+            directory=directory_config,
+            output=output_config,
+            filter=filter_config,
+            processing=processing_config,
+            folder_kml=folder_kml_config,
+        )
+        
         with pytest.raises(ConfigurationError) as exc_info:
-            self.config_manager._validate_configuration(
-                search_config, directory_config, output_config, filter_config
-            )
+            self.config_manager._validate_configuration(app_config)
         
         assert "sort-by-location" in str(exc_info.value)
         assert "find_only" in str(exc_info.value)
@@ -367,10 +400,17 @@ class TestConfigurationManager:
         # Test sort_by_location without output directory
         directory_config = DirectoryConfig(sort_by_location=True, find_only=False, output_directory=None)
         
+        app_config = ApplicationConfig(
+            search=search_config,
+            directory=directory_config,
+            output=output_config,
+            filter=filter_config,
+            processing=processing_config,
+            folder_kml=folder_kml_config,
+        )
+        
         with pytest.raises(ConfigurationError) as exc_info:
-            self.config_manager._validate_configuration(
-                search_config, directory_config, output_config, filter_config
-            )
+            self.config_manager._validate_configuration(app_config)
         
         assert "sort-by-location" in str(exc_info.value)
         assert "output_directory" in str(exc_info.value)
@@ -557,27 +597,6 @@ find_only = true
         assert config_data['directories']['root'] == "/test/path"
         assert config_data['directories']['find_only'] is True
 
-    @pytest.mark.unit
-    @patch('geo_image_search.config.tomllib', None)
-    def test_toml_parsing_without_tomllib(self, temp_dir):
-        """
-        Test graceful handling when TOML support is not available.
-        
-        This test documents behavior on systems without TOML support
-        and ensures the application still works without config files.
-        """
-        config_file = temp_dir / "test.toml"
-        config_file.write_text('[search]\naddress = "Test"')
-        
-        config_data = self.config_manager._load_config_file(config_file)
-        
-        # Should return empty dict when TOML not available
-        assert config_data == {}
-        
-        # Should log warning about missing TOML support
-        self.mock_logger.warning.assert_called_once()
-        warning_msg = self.mock_logger.warning.call_args[0][0]
-        assert "TOML support not available" in warning_msg
 
     @pytest.mark.unit
     def test_toml_parsing_invalid_syntax(self, temp_dir):

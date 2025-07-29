@@ -430,7 +430,7 @@ class TestRealWorldScenarios:
         file_files = [f for f in all_files if f.is_file()]
         
         # Filter to JPEG files only
-        jpeg_files = [f for f in file_files if processor._is_jpeg_file(str(f))]
+        jpeg_files = [f for f in file_files if processor.is_jpeg_file(str(f))]
         
         # Should find 4 JPEG files
         assert len(jpeg_files) == 4

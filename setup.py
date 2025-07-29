@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Read the README file
 this_directory = Path(__file__).parent
-long_description = (this_directory / "README").read_text()
+long_description = (this_directory / "README.md").read_text()
 
 setup(
     name="geo-image-search",
@@ -19,12 +19,9 @@ setup(
     install_requires=[
         "exif>=1.3.0",
         "geopy>=2.0.0",
+        "fastkml>=0.12",
+        "pygeoif>=1.0.0",
     ],
-    extras_require={
-        "kml": ["fastkml>=0.12", "shapely>=2.0.0"],
-        "toml": ["tomli>=1.2.0"],
-        "all": ["fastkml>=0.12", "shapely>=2.0.0", "tomli>=1.2.0"],
-    },
     entry_points={
         "console_scripts": [
             "geo-image-search=geo_image_search.main:main",

@@ -1,6 +1,6 @@
-# Geo Image Search 2.0 - Modular Architecture
+# Geo Image Search 2.0
 
-A Python command-line tool for finding and organizing JPEG images based on their GPS metadata. This is the new modular version of the application, completely refactored for better maintainability and developer experience.
+A Python command-line tool for finding and organizing JPEG images based on their GPS metadata. Version 2.0 features a complete modular architecture refactor for better maintainability and developer experience.
 
 ## 🆕 What's New in Version 2.0
 
@@ -10,6 +10,7 @@ A Python command-line tool for finding and organizing JPEG images based on their
 - **Better Error Handling**: Custom exception hierarchy with semantic error codes
 - **Improved Testing**: Modular design enables easy unit testing and dependency injection
 - **Package Structure**: Installable package with proper entry points
+- **Required Dependencies**: All dependencies are now required - no more conditional importing or degraded functionality
 
 ## Features
 
@@ -32,9 +33,6 @@ cd geo_image_search
 
 # Install in development mode
 pip install -e .
-
-# Or install with all optional dependencies
-pip install -e ".[all]"
 ```
 
 ### Dependencies
@@ -43,10 +41,10 @@ pip install -e ".[all]"
 - Python 3.11+
 - `exif` - EXIF metadata extraction
 - `geopy` - Distance calculations and geocoding
+- `fastkml` - KML export functionality
+- `pygeoif` - Geographic data processing for KML
 
-**Optional:**
-- `fastkml` + `shapely` - KML export functionality  
-- `tomli` - TOML configuration support (Python <3.11)
+**Note:** All dependencies are required. The application will fail at import time if any are missing.
 
 ## Architecture Overview
 
@@ -100,36 +98,36 @@ geo_image_search/
 
 ```bash
 # Search by address with 1-mile radius
-python geo_image_search_new.py -d /path/to/images -a "New York, NY" -r 1.0 -o output_folder
+python -m geo_image_search -d /path/to/images -a "New York, NY" -r 1.0 -o output_folder
 
 # Search by coordinates
-python geo_image_search_new.py -d /path/to/images -t 40.7128 -g -74.0060 -r 0.5 -o results
+python -m geo_image_search -d /path/to/images -t 40.7128 -g -74.0060 -r 0.5 -o results
 
 # Find-only mode (no file copying)
-python geo_image_search_new.py -d /path/to/images -a "Paris" -r 2.0 --find_only -v
+python -m geo_image_search -d /path/to/images -a "Paris" -r 2.0 --find_only -v
 ```
 
 ### Independent KML Export
 
 ```bash
 # Generate KML from existing folder
-python geo_image_search_new.py --export-folder-kml /path/to/photos
+python -m geo_image_search --export-folder-kml /path/to/photos
 
 # Custom output and non-recursive scan
-python geo_image_search_new.py --export-folder-kml /photos --output-kml vacation.kml --no-recursive
+python -m geo_image_search --export-folder-kml /photos --output-kml vacation.kml --no-recursive
 
 # Apply filters
-python geo_image_search_new.py --export-folder-kml /photos --date-from 2024-01-01 --date-to 2024-12-31 -v
+python -m geo_image_search --export-folder-kml /photos --date-from 2024-01-01 --date-to 2024-12-31 -v
 ```
 
 ### Configuration Management
 
 ```bash
 # Create sample configuration file
-python geo_image_search_new.py --create-config
+python -m geo_image_search --create-config
 
 # Use custom config file
-python geo_image_search_new.py --config my_settings.toml
+python -m geo_image_search --config my_settings.toml
 ```
 
 ## Configuration
@@ -200,7 +198,7 @@ logger.info("Operation completed successfully")
 
 ## Migration from Version 1.x
 
-The new modular version maintains full command-line compatibility with the original monolithic version. Simply replace calls to `geo_image_search.py` with `geo_image_search_new.py`.
+The new modular version maintains full command-line compatibility with the original monolithic version. Simply replace calls to `geo_image_search.py` with `python -m geo_image_search`.
 
 ### Key Improvements
 
@@ -240,3 +238,5 @@ MIT License - see LICENSE file for details.
 - Added comprehensive configuration validation
 - Improved error messages and user experience
 - Made package installable with proper entry points
+- Eliminated conditional importing - all dependencies are now required
+- Updated dependency list to use `pygeoif` instead of `shapely`

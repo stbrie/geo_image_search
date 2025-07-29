@@ -40,20 +40,6 @@ class TestGPSImageProcessor:
         assert hasattr(self.processor, 'gps_filter')
         assert hasattr(self.processor, 'date_parser')
 
-    @pytest.mark.unit
-    def test_gps_processor_requires_exif_library(self):
-        """
-        Test GPS processor requires exif library.
-        
-        This test documents the dependency on the exif library
-        and shows error handling when it's not available.
-        """
-        with patch('geo_image_search.gps.Image', None):
-            with pytest.raises(ImportError) as exc_info:
-                GPSImageProcessor(self.filter_config, self.mock_logger)
-            
-            assert "exif library is required" in str(exc_info.value)
-            assert "pip install exif" in str(exc_info.value)
 
     @pytest.mark.unit
     def test_is_jpeg_file_valid_extensions(self):
@@ -67,7 +53,7 @@ class TestGPSImageProcessor:
         
         for ext in valid_extensions:
             test_file = f"photo{ext}"
-            assert self.processor._is_jpeg_file(test_file) is True
+            assert self.processor.is_jpeg_file(test_file) is True
 
     @pytest.mark.unit
     def test_is_jpeg_file_invalid_extensions(self):
@@ -81,7 +67,7 @@ class TestGPSImageProcessor:
         
         for ext in invalid_extensions:
             test_file = f"file{ext}"
-            assert self.processor._is_jpeg_file(test_file) is False
+            assert self.processor.is_jpeg_file(test_file) is False
 
     @pytest.mark.unit
     def test_is_jpeg_file_path_handling(self):
@@ -98,7 +84,7 @@ class TestGPSImageProcessor:
         ]
         
         for path in full_paths:
-            assert self.processor._is_jpeg_file(path) is True
+            assert self.processor.is_jpeg_file(path) is True
 
     @pytest.mark.unit
     def test_convert_dms_to_decimal_basic(self):

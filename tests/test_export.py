@@ -8,7 +8,7 @@ for export formats and cross-platform path handling.
 import tempfile
 import csv
 from pathlib import Path
-from unittest.mock import Mock, patch, mock_open
+from unittest.mock import Mock, mock_open
 import pytest
 
 from geo_image_search.export import CSVExporter, KMLExporter
@@ -239,7 +239,7 @@ class TestKMLExport:
             
             # Create mock GPS processor
             mock_gps_processor = Mock()
-            mock_gps_processor._is_jpeg_file.return_value = True
+            mock_gps_processor.is_jpeg_file.return_value = True
             mock_gps_processor.extract_image_gps_data.side_effect = [
                 self.sample_images[0],
                 self.sample_images[1]
@@ -253,19 +253,6 @@ class TestKMLExport:
             # Should return success
             assert result is True
 
-    @pytest.mark.unit
-    def test_kml_without_dependencies(self):
-        """
-        Test KML export when optional dependencies are missing.
-        
-        This test shows graceful degradation when fastkml
-        library is not available.
-        """
-        # Mock fastkml as unavailable
-        with patch('geo_image_search.export.KML_AVAILABLE', False):
-            # Should handle gracefully - this would be tested in actual usage
-            # The current implementation assumes fastkml is available
-            pass
 
     @pytest.mark.unit  
     def test_path_normalization_in_export(self):

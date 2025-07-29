@@ -234,7 +234,7 @@ class TestCheckpointManager:
         
         # Should open checkpoint file for writing
         mock_file_open.assert_called_once_with(
-            "geo_search_checkpoint.json", 'w'
+            "geo_search_checkpoint.json", 'w', encoding='utf-8'
         )
         
         # Should write JSON data with processed files, total, and timestamp
@@ -283,7 +283,7 @@ class TestCheckpointManager:
         # The actual implementation uses Path(checkpoint_file) so it's a Path object
         from pathlib import Path
         expected_path = Path(checkpoint_manager.checkpoint_file)
-        mock_file_open.assert_called_once_with(expected_path, 'r')
+        mock_file_open.assert_called_once_with(expected_path, 'r', encoding='utf-8')
         mock_json_load.assert_called_once()
         
         # Should log info about loaded checkpoint with timestamp

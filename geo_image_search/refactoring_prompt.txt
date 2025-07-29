@@ -1,0 +1,76 @@
+Please analyze the codebase consisting of geo_image_search.py and all code under the ./geo_image_search directory for code smells and create a comprehensive refactoring plan. Focus on improving developer quality of experience through better code quality, maintainability, and readability.
+
+Rules we live by:
+* if there is an existing module already written by somebody else that we don't have to maintain, but can use, we use it.  We do not re-invent the wheel.
+* We don't add unnecessary abstractions where they are not necessary.  If there's already an import providing the functionality that we would abstract, we don't need to abstract it.
+* We don't catch generic "Exception"s.  We take the time to figure out what a bit of code will throw and we catch that exception, not big hairy "Exception".
+
+
+Identify the eight most "egregious" problems.
+  Evaluation Criteria:
+
+
+  Code Smells to Identify:
+
+  Long methods/functions (>20-30 lines)
+  Duplicate code patterns
+  God classes/modules doing too much
+  Poor naming (variables, functions, classes)
+  Magic numbers and hardcoded values
+  Deeply nested conditionals
+  Dead code and unused imports
+  Inconsistent coding style
+  Missing or poor documentation
+  Tight coupling between modules
+  Violations of single responsibility principle
+  Complex conditional logic that could be simplified
+  Poor error handling patterns
+  Mixing concerns (business logic with I/O, etc.)
+
+
+  Best Practices to Check:
+
+  Proper use of Python idioms and conventions
+  Type hints usage
+  Appropriate abstraction levels
+  SOLID principles adherence
+  DRY (Don't Repeat Yourself) violations
+  Clear separation of concerns
+  Testability of the code
+  Configuration management
+  Logging practices
+
+
+  Refactoring Plan Requirements:
+
+  Prioritize refactorings by impact (high/medium/low)
+  Provide specific before/after code examples for key refactorings
+  Suggest design pattern implementations where appropriate
+  Recommend module/class restructuring if needed
+  Include estimates of effort required
+  Identify quick wins vs. larger architectural changes
+  Suggest naming improvements with specific recommendations
+  Recommend ways to improve code documentation
+
+
+  Output Format:
+
+  Executive summary of main issues found
+  Detailed findings organized by file/module
+  Prioritized refactoring plan with:
+
+  Issue description
+  Code smell name
+  Proposed solution in plain old english
+  Benefits of the change
+  Estimated effort (small/medium/large)
+
+
+  Overall architecture recommendations
+  Testing strategy for the refactoring process
+
+
+
+  Please be thorough but pragmatic - focus on changes that will genuinely improve the developer experience and code
+   maintainability, not just theoretical perfection. Flag any particularly "kludgy" or "stinky" code that makes the
+   codebase harder to work with.
