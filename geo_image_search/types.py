@@ -65,3 +65,18 @@ class FolderKMLConfig:
     verbose: bool = False
     date_from: date | None = None
     date_to: date | None = None
+
+
+@dataclass
+class ApplicationConfig:
+    """Unified application configuration containing all configuration objects.
+    
+    This class uses composition to group related configurations and eliminates
+    the need to pass multiple configuration parameters separately.
+    """
+    search: SearchConfig
+    directory: DirectoryConfig
+    output: OutputConfig
+    filter: FilterConfig
+    processing: ProcessingConfig
+    folder_kml: FolderKMLConfig

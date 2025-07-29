@@ -66,7 +66,7 @@ class ClusteringEngine:
         # Try to get address for cluster center
         try:
             geolocator = Nominatim(user_agent=Constants.DEFAULT_USER_AGENT)
-            location_info = geolocator.reverse(location, timeout=10)
+            location_info = geolocator.reverse(location, timeout=Constants.GEOCODING_TIMEOUT_SECONDS)
             
             if location_info and location_info.raw.get('address'):
                 address = location_info.raw['address']

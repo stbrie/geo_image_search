@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import List, Dict
 
+from .constants import Constants
+
 try:
     from fastkml.kml import KML
     from fastkml.containers import Document, Folder
@@ -38,7 +40,7 @@ class ExportManager:
 class CSVExporter(ExportManager):
     """Handles CSV export functionality."""
     
-    def export_image_addresses(self, csv_data: List[Dict], output_directory: str) -> bool:
+    def export_image_addresses(self, csv_data: List[ImageData], output_directory: str) -> bool:
         """Export collected image address data to CSV file."""
         if not csv_data:
             self.logger.info("No GPS data found in images for CSV export.")
@@ -51,7 +53,7 @@ class CSVExporter(ExportManager):
         csv_path = os.path.join(output_directory, "image_addresses.csv")
         try:
             with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
-                fieldnames = ["filename", "path", "latitude", "longitude", "address"]
+                fieldnames = ["filename", "path", "latitude", "longitude", "date_taken", "address"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(csv_data)
@@ -115,7 +117,7 @@ class KMLExporter(ExportManager):
         # Add center point if provided
         if center_coords:
             lookat = LookAt(
-                range=200, latitude=center_coords[0], longitude=center_coords[1]
+                range=Constants.KML_CENTER_VIEW_RANGE, latitude=center_coords[0], longitude=center_coords[1]
             )
             center_point = Placemark(
                 name="Center Point",
@@ -134,13 +136,13 @@ class KMLExporter(ExportManager):
                 description_parts.append(f"<br/>Date: {img_data['date_taken']}")
             
             # Add image preview
-            description_parts.append(f'<br/><img style="max-width:500px;" src="file:///{self.path_normalizer.get_kml_image_path(img_data["path"])}">]]>')
+            description_parts.append(f'<br/><img style="max-width:500px;" src="{self.path_normalizer.get_kml_image_path(img_data["path"])}">]]>')
             
             description = "".join(description_parts)
             
             longi = float(img_data["longitude"])
             lati = float(img_data["latitude"])
-            lookat = LookAt(range=50, latitude=lati, longitude=longi)
+            lookat = LookAt(range=Constants.KML_POINT_VIEW_RANGE, latitude=lati, longitude=longi)
             
             k_point = Placemark(
                 name=img_data["filename"],

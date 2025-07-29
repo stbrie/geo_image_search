@@ -60,6 +60,13 @@ class LocationSearchEngine:
         else:
             raise ConfigurationError("Either address or coordinates must be provided")
     
+    def _validate_coordinates(self, latitude: float, longitude: float) -> None:
+        """Validate GPS coordinate ranges."""
+        if not (-90 <= latitude <= 90):
+            raise ValueError(f"Invalid latitude: {latitude}. Must be between -90 and 90 degrees.")
+        if not (-180 <= longitude <= 180):
+            raise ValueError(f"Invalid longitude: {longitude}. Must be between -180 and 180 degrees.")
+    
     def calculate_distance_miles(self, image_coords: tuple[float, float]) -> float:
         """Calculate distance in miles between search coords and image coords."""
         if not self.search_coords:

@@ -12,7 +12,7 @@ except ImportError:
 from .constants import Constants
 from .exceptions import GPSDataError
 from .types import ImageData, FilterConfig
-from .utils import GPSFilter, DateParser
+from .utils import GPSFilter, DateParser, ImageMetadata
 
 
 class GPSImageProcessor:
@@ -62,8 +62,9 @@ class GPSImageProcessor:
                 if not self.gps_filter.apply_gps_accuracy_filters(my_image, filename):
                     return None
                 
-                # Extract date information
-                date_taken = self._extract_date_taken(my_image)
+                # Extract date information using ImageMetadata wrapper
+                metadata = ImageMetadata(my_image)
+                date_taken = metadata.extract_date_taken()
                 
                 return ImageData(
                     filename=filename,
@@ -104,28 +105,27 @@ class GPSImageProcessor:
         """
         lat_deg_dec = None
         long_deg_dec = None
+        
+        # Use ImageMetadata wrapper for consistent encapsulation
+        metadata = ImageMetadata(image)
 
         # Get latitude
-        try:
-            lat = image.gps_latitude
-            lat_ref = getattr(image, "gps_latitude_ref", "N")
+        lat = metadata.get_gps_latitude()
+        if lat:
+            lat_ref = metadata.get_gps_latitude_ref()
             decimal_latitude = self._convert_dhms_to_decimal(lat)
             if decimal_latitude:
                 # Apply negative sign for South
                 lat_deg_dec = decimal_latitude if lat_ref == "N" else -decimal_latitude
-        except AttributeError as e:
-            self.logger.debug(f"Image has no latitude GPS data: {e}")
 
         # Get longitude
-        try:
-            lon = image.gps_longitude
-            lon_ref = getattr(image, "gps_longitude_ref", "W")
+        lon = metadata.get_gps_longitude()
+        if lon:
+            lon_ref = metadata.get_gps_longitude_ref()
             decimal_longitude = self._convert_dhms_to_decimal(lon)
             if decimal_longitude:
                 # Apply negative sign for West
                 long_deg_dec = decimal_longitude if lon_ref == "E" else -decimal_longitude
-        except AttributeError as e:
-            self.logger.debug(f"Image has no longitude data: {e}")
 
         return lat_deg_dec, long_deg_dec
     
@@ -147,15 +147,3 @@ class GPSImageProcessor:
         seconds = dhms[2] / 3600
         return degrees + minutes + seconds
     
-    def _extract_date_taken(self, image: Image) -> str | None:
-        """Extract date taken from EXIF data."""
-        date_fields = ["datetime_original", "datetime", "datetime_digitized"]
-        for field in date_fields:
-            try:
-                if hasattr(image, field):
-                    date_str = getattr(image, field)
-                    if date_str:
-                        return date_str
-            except AttributeError:
-                continue
-        return None

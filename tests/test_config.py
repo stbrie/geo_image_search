@@ -395,14 +395,12 @@ class TestConfigurationIntegration:
         test_args = ['-d', '/test/images']
         
         with patch('sys.argv', ['prog'] + test_args):
-            configs = self.config_manager.parse_arguments_and_config()
+            app_config = self.config_manager.parse_arguments_and_config()
             
-        search_config, directory_config, output_config, filter_config, processing_config, folder_kml_config = configs
-        
         # Test required values are set
-        assert directory_config.root == '/test/images'
-        assert isinstance(search_config, SearchConfig)
-        assert isinstance(output_config, OutputConfig)
+        assert app_config.directory.root == '/test/images'
+        assert isinstance(app_config.search, SearchConfig)
+        assert isinstance(app_config.output, OutputConfig)
 
     @pytest.mark.unit
     def test_parse_arguments_and_config_missing_root(self):
@@ -485,16 +483,14 @@ resume = true
         test_args = ['-d', '/cli/images', '--config', str(config_file)]
         
         with patch('sys.argv', ['prog'] + test_args):
-            configs = self.config_manager.parse_arguments_and_config()
+            app_config = self.config_manager.parse_arguments_and_config()
             
-        search_config, directory_config, output_config, filter_config, processing_config, folder_kml_config = configs
-        
         # CLI arg should override config file
-        assert directory_config.root == '/cli/images'
+        assert app_config.directory.root == '/cli/images'
         
         # Config file values should be used where no CLI override
-        assert search_config.address == "Test City, NY"  # From config file
-        assert search_config.radius == 2.0  # From config file
+        assert app_config.search.address == "Test City, NY"  # From config file
+        assert app_config.search.radius == 2.0  # From config file
 
     @pytest.mark.unit
     def test_configuration_objects_creation(self):
@@ -507,24 +503,22 @@ resume = true
         test_args = ['-d', '/test', '-a', 'NYC', '-r', '2.0', '-v', '--export-kml']
         
         with patch('sys.argv', ['prog'] + test_args):
-            configs = self.config_manager.parse_arguments_and_config()
+            app_config = self.config_manager.parse_arguments_and_config()
             
-        search_config, directory_config, output_config, filter_config, processing_config, folder_kml_config = configs
-        
         # Test SearchConfig
-        assert search_config.address == 'NYC'
-        assert search_config.radius == 2.0
+        assert app_config.search.address == 'NYC'
+        assert app_config.search.radius == 2.0
         
         # Test DirectoryConfig  
-        assert directory_config.root == '/test'
+        assert app_config.directory.root == '/test'
         
         # Test OutputConfig
-        assert output_config.verbose is True
-        assert output_config.export_kml is True
+        assert app_config.output.verbose is True
+        assert app_config.output.export_kml is True
         
         # Test other configs exist
-        assert isinstance(filter_config, FilterConfig)
-        assert isinstance(processing_config, ProcessingConfig)
+        assert isinstance(app_config.filter, FilterConfig)
+        assert isinstance(app_config.processing, ProcessingConfig)
 
 
 class TestTOMLSupport:

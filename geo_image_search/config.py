@@ -5,6 +5,7 @@ import logging
 import sys
 from datetime import date
 from pathlib import Path
+from typing import NoReturn
 
 try:
     import tomllib
@@ -18,7 +19,7 @@ from .constants import Constants
 from .exceptions import ConfigurationError, FileOperationError
 from .types import (
     SearchConfig, DirectoryConfig, OutputConfig, FilterConfig, 
-    ProcessingConfig, FolderKMLConfig
+    ProcessingConfig, FolderKMLConfig, ApplicationConfig
 )
 from .utils import PathNormalizer, DateParser
 
@@ -31,15 +32,12 @@ class ConfigurationManager:
         self.path_normalizer = PathNormalizer()
         self.date_parser = DateParser()
         
-    def parse_arguments_and_config(self) -> tuple[
-        SearchConfig, DirectoryConfig, OutputConfig, FilterConfig, 
-        ProcessingConfig, FolderKMLConfig
-    ]:
+    def parse_arguments_and_config(self) -> ApplicationConfig:
         """
         Parse command line arguments and load configuration files.
         
         Returns:
-            Tuple of all configuration objects
+            ApplicationConfig containing all configuration objects
         """
         # Parse command line arguments
         args = self._create_argument_parser().parse_args()
@@ -104,9 +102,13 @@ class ConfigurationManager:
             search_config, directory_config, output_config, filter_config
         )
         
-        return (
-            search_config, directory_config, output_config, 
-            filter_config, processing_config, folder_kml_config
+        return ApplicationConfig(
+            search=search_config,
+            directory=directory_config,
+            output=output_config,
+            filter=filter_config,
+            processing=processing_config,
+            folder_kml=folder_kml_config
         )
     
     def _create_argument_parser(self) -> argparse.ArgumentParser:
@@ -331,7 +333,7 @@ class ConfigurationManager:
             return self.date_parser.parse_date(date_str, field_name)
         return None
     
-    def _handle_folder_kml_mode(self, args: argparse.Namespace) -> tuple:
+    def _handle_folder_kml_mode(self, args: argparse.Namespace) -> NoReturn:
         """Handle folder KML export mode and exit."""
         # Import here to avoid circular imports
         from .export import KMLExporter

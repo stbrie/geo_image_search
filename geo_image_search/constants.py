@@ -10,6 +10,13 @@ class Constants:
     CHECKPOINT_INTERVAL_FILES = 100
     DEFAULT_USER_AGENT = "github/stbrie: geo_image_search"
     
+    # Geocoding timeouts
+    GEOCODING_TIMEOUT_SECONDS = 10
+    
+    # KML view ranges in meters
+    KML_CENTER_VIEW_RANGE = 200
+    KML_POINT_VIEW_RANGE = 50
+    
     class ErrorCodes:
         """Application exit codes."""
         SUCCESS = 0

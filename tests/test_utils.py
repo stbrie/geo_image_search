@@ -554,7 +554,8 @@ class TestGPSFilter:
         mock_image.datetime = "2024:01:16 11:30:00"  # Lower priority
         mock_image.datetime_digitized = "2024:01:17 12:30:00"  # Lowest priority
         
-        date_str = self.gps_filter._extract_image_date(mock_image)
+        # Use the shared DateParser method
+        date_str = DateParser.extract_image_date(mock_image)
         assert date_str == "2024:01:15 10:30:00"  # Should use datetime_original
 
     @pytest.mark.unit
@@ -574,5 +575,6 @@ class TestGPSFilter:
             mock_image.datetime = "2024:01:16 11:30:00"
             mock_image.datetime_digitized = "2024:01:17 12:30:00"
             
-            date_str = self.gps_filter._extract_image_date(mock_image)
-            assert date_str == "2024:01:16 11:30:00"  # Should use datetime
+            # Use the shared DateParser method
+            date_str = DateParser.extract_image_date(mock_image)
+            assert date_str == "2024:01:16 11:30:00"  # Should fall back to datetime

@@ -3,11 +3,13 @@
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, date
 from pathlib import Path
+from typing import List, Dict
 from .constants import Constants
-from .exceptions import ConfigurationError, GPSDataError
-from .types import FilterConfig
+from .exceptions import ConfigurationError, GPSDataError, FileOperationError
+from .types import FilterConfig, ImageData
 
 
 class LoggingSetup:
@@ -41,10 +43,12 @@ class PathNormalizer:
     def get_kml_image_path(image_path: str) -> str:
         """Get the proper image path format for KML files."""
         # KML expects forward slashes and file:// URLs
-        normalized = Path(image_path).as_posix()
+        # First convert any backslashes to forward slashes
+        normalized = image_path.replace('\\', '/')
+        # Ensure it starts with forward slash
         if not normalized.startswith('/'):
             normalized = '/' + normalized
-        return normalized
+        return f"file://{normalized}"
     
     @staticmethod
     def sanitize_folder_name(folder_name: str) -> str:
@@ -92,6 +96,105 @@ class DateParser:
         except (ValueError, TypeError):
             # If we can't parse the date, include the image
             return True
+    
+    @staticmethod
+    def extract_image_date(image) -> str | None:
+        """
+        Extract date taken from EXIF data.
+        
+        This method consolidates duplicate date extraction logic that was
+        previously scattered across GPSImageProcessor and GPSFilter classes.
+        Now uses ImageMetadata wrapper for consistent encapsulation.
+        
+        Args:
+            image: An image object with EXIF metadata
+            
+        Returns:
+            Date string in EXIF format or None if no date found
+        """
+        # Use ImageMetadata wrapper for consistent encapsulation
+        metadata = ImageMetadata(image)
+        return metadata.extract_date_taken()
+
+
+class ImageMetadata:
+    """
+    Wrapper class that encapsulates image attribute access.
+    
+    This class provides a clean interface for accessing EXIF metadata,
+    eliminating the need for direct hasattr/getattr calls and improving
+    testability by providing a consistent API.
+    """
+    
+    def __init__(self, image):
+        self._image = image
+    
+    def get_gps_horizontal_error(self) -> float | None:
+        """Get GPS horizontal error in meters, if available."""
+        try:
+            if hasattr(self._image, 'gps_horizontal_error'):
+                return float(self._image.gps_horizontal_error)
+        except (AttributeError, ValueError, TypeError):
+            pass
+        return None
+    
+    def get_gps_dop(self) -> float | None:
+        """Get GPS Dilution of Precision value, if available."""
+        try:
+            if hasattr(self._image, 'gps_dop'):
+                return float(self._image.gps_dop)
+        except (AttributeError, ValueError, TypeError):
+            pass
+        return None
+    
+    def extract_date_taken(self) -> str | None:
+        """Extract date taken from EXIF data with priority order."""
+        date_fields = ["datetime_original", "datetime", "datetime_digitized"]
+        for field in date_fields:
+            try:
+                if hasattr(self._image, field):
+                    date_str = getattr(self._image, field)
+                    if date_str:
+                        return date_str
+            except AttributeError:
+                continue
+        return None
+    
+    def get_gps_latitude(self) -> list | None:
+        """Get GPS latitude coordinates in DMS format."""
+        try:
+            if hasattr(self._image, 'gps_latitude'):
+                return self._image.gps_latitude
+        except AttributeError:
+            pass
+        return None
+    
+    def get_gps_latitude_ref(self) -> str:
+        """Get GPS latitude reference (N/S), defaulting to 'N'."""
+        try:
+            if hasattr(self._image, 'gps_latitude_ref'):
+                return self._image.gps_latitude_ref
+        except AttributeError:
+            pass
+        return "N"
+    
+    def get_gps_longitude(self) -> list | None:
+        """Get GPS longitude coordinates in DMS format."""
+        try:
+            if hasattr(self._image, 'gps_longitude'):
+                return self._image.gps_longitude
+        except AttributeError:
+            pass
+        return None
+    
+    def get_gps_longitude_ref(self) -> str:
+        """Get GPS longitude reference (E/W), defaulting to 'W'."""
+        try:
+            if hasattr(self._image, 'gps_longitude_ref'):
+                return self._image.gps_longitude_ref
+        except AttributeError:
+            pass
+        return "W"
 
 
 class GPSFilter:
@@ -104,29 +207,21 @@ class GPSFilter:
     
     def apply_gps_accuracy_filters(self, image, filename: str) -> bool:
         """Apply GPS accuracy filters to an image."""
+        metadata = ImageMetadata(image)
+        
         # Check GPS horizontal error
         if self.filter_config.max_gps_error is not None:
-            try:
-                if hasattr(image, 'gps_horizontal_error'):
-                    gps_error = float(image.gps_horizontal_error)
-                    if gps_error > self.filter_config.max_gps_error:
-                        self.logger.debug(f"Filtered {filename}: GPS error {gps_error}m > {self.filter_config.max_gps_error}m")
-                        return False
-            except (AttributeError, ValueError, TypeError):
-                # If we can't get GPS error, don't filter
-                pass
+            gps_error = metadata.get_gps_horizontal_error()
+            if gps_error is not None and gps_error > self.filter_config.max_gps_error:
+                self.logger.debug(f"Filtered {filename}: GPS error {gps_error}m > {self.filter_config.max_gps_error}m")
+                return False
         
         # Check Dilution of Precision (DOP)
         if self.filter_config.max_dop is not None:
-            try:
-                if hasattr(image, 'gps_dop'):
-                    dop = float(image.gps_dop)
-                    if dop > self.filter_config.max_dop:
-                        self.logger.debug(f"Filtered {filename}: DOP {dop} > {self.filter_config.max_dop}")
-                        return False
-            except (AttributeError, ValueError, TypeError):
-                # If we can't get DOP, don't filter
-                pass
+            dop = metadata.get_gps_dop()
+            if dop is not None and dop > self.filter_config.max_dop:
+                self.logger.debug(f"Filtered {filename}: DOP {dop} > {self.filter_config.max_dop}")
+                return False
         
         return True
     
@@ -135,8 +230,9 @@ class GPSFilter:
         if not self.filter_config.date_from and not self.filter_config.date_to:
             return True
         
-        # Extract date from image
-        image_date = self._extract_image_date(image)
+        # Extract date from image using ImageMetadata wrapper
+        metadata = ImageMetadata(image)
+        image_date = metadata.extract_date_taken()
         if not image_date:
             # If no date available, include the image (conservative approach)
             return True
@@ -151,16 +247,76 @@ class GPSFilter:
             self.logger.debug(f"Filtered {filename}: date {image_date} outside range")
         
         return is_in_range
+
+
+class FileOperationManager:
+    """Handles file copying and organization operations."""
     
-    def _extract_image_date(self, image) -> str | None:
-        """Extract date taken from EXIF data."""
-        date_fields = ["datetime_original", "datetime", "datetime_digitized"]
-        for field in date_fields:
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self.path_normalizer = PathNormalizer()
+    
+    def copy_images_simple(self, images: List[ImageData], output_directory: str) -> int:
+        """Copy images to output directory without clustering."""
+        output_path = Path(output_directory)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        copied_count = 0
+        for image_data in images:
             try:
-                if hasattr(image, field):
-                    date_str = getattr(image, field)
-                    if date_str:
-                        return date_str
-            except AttributeError:
-                continue
-        return None
+                source_path = Path(image_data["path"])
+                dest_path = output_path / image_data["filename"]
+                
+                # Handle duplicate filenames
+                counter = 1
+                original_dest = dest_path
+                while dest_path.exists():
+                    stem = original_dest.stem
+                    suffix = original_dest.suffix
+                    dest_path = output_path / f"{stem}_{counter}{suffix}"
+                    counter += 1
+                
+                shutil.copy2(source_path, dest_path)
+                copied_count += 1
+                self.logger.debug(f"Copied: {source_path} -> {dest_path}")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to copy {image_data['filename']}: {e}")
+                
+        return copied_count
+    
+    def copy_images_by_clusters(self, clusters: Dict[str, List[ImageData]], output_directory: str) -> int:
+        """Copy images organized by location clusters."""
+        output_path = Path(output_directory)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        copied_count = 0
+        for cluster_name, cluster_images in clusters.items():
+            # Create cluster subfolder
+            cluster_folder = output_path / self.path_normalizer.sanitize_folder_name(cluster_name)
+            cluster_folder.mkdir(parents=True, exist_ok=True)
+            
+            self.logger.info(f"Processing cluster: {cluster_name} ({len(cluster_images)} images)")
+            
+            for image_data in cluster_images:
+                try:
+                    source_path = Path(image_data["path"])
+                    dest_path = cluster_folder / image_data["filename"]
+                    
+                    # Handle duplicate filenames within cluster
+                    counter = 1
+                    original_dest = dest_path
+                    while dest_path.exists():
+                        stem = original_dest.stem
+                        suffix = original_dest.suffix
+                        dest_path = cluster_folder / f"{stem}_{counter}{suffix}"
+                        counter += 1
+                    
+                    shutil.copy2(source_path, dest_path)
+                    copied_count += 1
+                    self.logger.debug(f"Copied: {source_path} -> {dest_path}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to copy {image_data['filename']}: {e}")
+        
+        return copied_count

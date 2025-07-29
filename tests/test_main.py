@@ -11,7 +11,7 @@ import pytest
 from geo_image_search.main import main
 from geo_image_search.types import (
     SearchConfig, DirectoryConfig, OutputConfig, FilterConfig, 
-    ProcessingConfig, FolderKMLConfig
+    ProcessingConfig, FolderKMLConfig, ApplicationConfig
 )
 from geo_image_search.exceptions import (
     ConfigurationError, GPSDataError, FileOperationError
@@ -56,9 +56,13 @@ class TestMainFunction:
             with patch('geo_image_search.main.ConfigurationManager') as mock_config_mgr:
                 mock_config_instance = Mock()
                 mock_config_mgr.return_value = mock_config_instance
-                mock_config_instance.parse_arguments_and_config.return_value = (
-                    self.search_config, self.directory_config, self.output_config,
-                    self.filter_config, self.processing_config, self.folder_kml_config
+                mock_config_instance.parse_arguments_and_config.return_value = ApplicationConfig(
+                    search=self.search_config,
+                    directory=self.directory_config,
+                    output=self.output_config,
+                    filter=self.filter_config,
+                    processing=self.processing_config,
+                    folder_kml=self.folder_kml_config
                 )
                 
                 with patch('geo_image_search.main.GPSImageProcessor'):
@@ -98,9 +102,13 @@ class TestMainFunction:
             with patch('geo_image_search.main.ConfigurationManager') as mock_config_mgr:
                 mock_config_instance = Mock()
                 mock_config_mgr.return_value = mock_config_instance
-                mock_config_instance.parse_arguments_and_config.return_value = (
-                    self.search_config, self.directory_config, self.output_config,
-                    self.filter_config, self.processing_config, folder_kml_config
+                mock_config_instance.parse_arguments_and_config.return_value = ApplicationConfig(
+                    search=self.search_config,
+                    directory=self.directory_config,
+                    output=self.output_config,
+                    filter=self.filter_config,
+                    processing=self.processing_config,
+                    folder_kml=folder_kml_config
                 )
                 
                 with patch('geo_image_search.main.KMLExporter') as mock_kml_exporter:
@@ -136,9 +144,13 @@ class TestMainFunction:
             with patch('geo_image_search.main.ConfigurationManager') as mock_config_mgr:
                 mock_config_instance = Mock()
                 mock_config_mgr.return_value = mock_config_instance
-                mock_config_instance.parse_arguments_and_config.return_value = (
-                    self.search_config, self.directory_config, self.output_config,
-                    self.filter_config, self.processing_config, self.folder_kml_config
+                mock_config_instance.parse_arguments_and_config.return_value = ApplicationConfig(
+                    search=self.search_config,
+                    directory=self.directory_config,
+                    output=self.output_config,
+                    filter=self.filter_config,
+                    processing=self.processing_config,
+                    folder_kml=self.folder_kml_config
                 )
                 
                 with patch('geo_image_search.main.GPSImageProcessor') as mock_gps:
@@ -247,9 +259,13 @@ class TestMainFunction:
             with patch('geo_image_search.main.ConfigurationManager') as mock_config_mgr:
                 mock_config_instance = Mock()
                 mock_config_mgr.return_value = mock_config_instance
-                mock_config_instance.parse_arguments_and_config.return_value = (
-                    self.search_config, self.directory_config, self.output_config,
-                    self.filter_config, self.processing_config, self.folder_kml_config
+                mock_config_instance.parse_arguments_and_config.return_value = ApplicationConfig(
+                    search=self.search_config,
+                    directory=self.directory_config,
+                    output=self.output_config,
+                    filter=self.filter_config,
+                    processing=self.processing_config,
+                    folder_kml=self.folder_kml_config
                 )
                 
                 with patch('geo_image_search.main.GPSImageProcessor') as mock_gps:
@@ -289,9 +305,13 @@ class TestMainFunction:
             with patch('geo_image_search.main.ConfigurationManager') as mock_config_mgr:
                 mock_config_instance = Mock()
                 mock_config_mgr.return_value = mock_config_instance
-                mock_config_instance.parse_arguments_and_config.return_value = (
-                    self.search_config, self.directory_config, self.output_config,
-                    self.filter_config, self.processing_config, self.folder_kml_config
+                mock_config_instance.parse_arguments_and_config.return_value = ApplicationConfig(
+                    search=self.search_config,
+                    directory=self.directory_config,
+                    output=self.output_config,
+                    filter=self.filter_config,
+                    processing=self.processing_config,
+                    folder_kml=self.folder_kml_config
                 )
                 
                 with patch('geo_image_search.main.GPSImageProcessor'):
@@ -329,9 +349,13 @@ class TestMainFunction:
                 custom_search_config = SearchConfig(address="Custom Location", radius=2.5)
                 custom_filter_config = FilterConfig(max_gps_error=25.0)
                 
-                mock_config_instance.parse_arguments_and_config.return_value = (
-                    custom_search_config, self.directory_config, self.output_config,
-                    custom_filter_config, self.processing_config, self.folder_kml_config
+                mock_config_instance.parse_arguments_and_config.return_value = ApplicationConfig(
+                    search=custom_search_config,
+                    directory=self.directory_config,
+                    output=self.output_config,
+                    filter=custom_filter_config,
+                    processing=self.processing_config,
+                    folder_kml=self.folder_kml_config
                 )
                 
                 with patch('geo_image_search.main.GPSImageProcessor') as mock_gps:
