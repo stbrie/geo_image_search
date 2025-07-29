@@ -423,6 +423,21 @@ resume = false          # Resume from previous interrupted search
             action="store_true",
             help="Sort images into subfolders by geographic clusters (uses radius for grouping)",
         )
+        parser.add_argument(
+            "--export-folder-kml",
+            type=str,
+            help="Generate KML from all GPS-tagged images in the specified folder (independent of search)",
+        )
+        parser.add_argument(
+            "--output-kml",
+            type=str,
+            help="Output path for KML file when using --export-folder-kml (optional)",
+        )
+        parser.add_argument(
+            "--no-recursive",
+            action="store_true",
+            help="Don't search subfolders recursively when using --export-folder-kml",
+        )
 
         args = parser.parse_args()
 
@@ -430,6 +445,36 @@ resume = false          # Resume from previous interrupted search
         if args.create_config:
             self.create_sample_config(args.create_config)
             sys.exit(0)
+
+        # Handle folder KML export mode early (independent of normal search)
+        if args.export_folder_kml:
+            # Load basic configuration for verbose mode and date filters
+            config_path = args.config if hasattr(args, "config") else None
+            self.config_data = self.load_config_file(config_path)
+            if self.config_data:
+                self.merge_config_with_args(self.config_data, args)
+            
+            # Set required attributes for folder export
+            self.verbose = getattr(args, 'verbose', False)
+            self.date_from = None
+            self.date_to = None
+            if hasattr(args, 'date_from') and args.date_from:
+                try:
+                    self.date_from = datetime.strptime(args.date_from, "%Y-%m-%d").date()
+                except ValueError:
+                    print(f"Error: Invalid date format for --date-from: {args.date_from}. Use YYYY-MM-DD")
+                    sys.exit(11)
+            if hasattr(args, 'date_to') and args.date_to:
+                try:
+                    self.date_to = datetime.strptime(args.date_to, "%Y-%m-%d").date()
+                except ValueError:
+                    print(f"Error: Invalid date format for --date-to: {args.date_to}. Use YYYY-MM-DD")
+                    sys.exit(12)
+            
+            # Run folder KML export and exit
+            recursive = not args.no_recursive
+            success = self.export_kml_from_folder(args.export_folder_kml, args.output_kml, recursive)
+            sys.exit(0 if success else 1)
 
         # Load configuration file first
         config_path = args.config if hasattr(args, "config") else None
@@ -579,7 +624,6 @@ resume = false          # Resume from previous interrupted search
         with open(kml_path, "r", encoding="utf-8") as f:
             kml_content = f.read()
         kml_content = kml_content.replace("&lt;", "<").replace("&gt;", ">")
-        kml_content
         with open(kml_path, "w", encoding="utf-8") as f:
             f.write(kml_content)
 
@@ -930,6 +974,64 @@ resume = false          # Resume from previous interrupted search
             return False
         return my_image
 
+    def extract_image_gps_data(self, image_path: str) -> dict | None:
+        """
+        Extract GPS and metadata from a single image file.
+        
+        Args:
+            image_path: Full path to the image file
+            
+        Returns:
+            dict with keys: filename, path, latitude, longitude, date_taken
+            None if no GPS data or error reading file
+        """
+        if not self.is_jpeg_file(image_path):
+            return None
+            
+        filename = os.path.basename(image_path)
+        
+        try:
+            with open(image_path, "rb") as img_file:
+                my_image = self.load_and_validate_image(img_file, filename)
+                if not my_image:
+                    return None
+                
+                # Check date range if filters are set
+                if not self.check_date_range(my_image, filename):
+                    return None
+                
+                # Extract GPS coordinates
+                lat_deg_dec, long_deg_dec = self.get_decimal_coords(my_image)
+                
+                if lat_deg_dec is None or long_deg_dec is None:
+                    return None
+                
+                # Extract date information
+                date_taken = None
+                date_fields = ["datetime_original", "datetime", "datetime_digitized"]
+                for field in date_fields:
+                    try:
+                        if hasattr(my_image, field):
+                            date_str = getattr(my_image, field)
+                            if date_str:
+                                date_taken = date_str
+                                break
+                    except AttributeError:
+                        continue
+                
+                return {
+                    "filename": filename,
+                    "path": image_path,
+                    "latitude": lat_deg_dec,
+                    "longitude": long_deg_dec,
+                    "date_taken": date_taken
+                }
+                
+        except (OSError, IOError, PermissionError) as e:
+            if self.verbose:
+                print(f"Error processing {image_path}: {e}")
+            return None
+
     def process_clustered_image(self, dir_path, filename, lat_deg_dec, long_deg_dec):
         if self.verbose:
             print(f"Processing {filename} at {lat_deg_dec:.6f}, {long_deg_dec:.6f}")
@@ -1131,6 +1233,83 @@ resume = false          # Resume from previous interrupted search
         except (OSError, IOError) as e:
             print(f"Error writing CSV file: {e}")
 
+    def build_kml_from_image_data(self, image_data_list: list, center_coords: tuple | None = None, folder_name: str = "Images") -> str:
+        """
+        Build KML content from a list of image data dictionaries.
+        
+        Args:
+            image_data_list: List of dicts with keys: filename, path, latitude, longitude, date_taken
+            center_coords: Optional tuple of (lat, lon) for search center point
+            folder_name: Name for the KML folder
+            
+        Returns:
+            KML content as string
+        """
+        if not KML_AVAILABLE:
+            raise ImportError("KML export not available. Install 'fastkml' and 'shapely' packages.")
+        
+        if not image_data_list:
+            raise ValueError("No image data provided for KML export")
+        
+        # Create KML document
+        assert Point is not None
+        k = KML()
+        
+        # Create document
+        doc = Document(
+            id="geo_image_search_results",
+            name="Geo Image Search Results",
+            description=f"GPS-tagged images exported from folder",
+        )
+        k.append(doc)
+        
+        # Create folder for images
+        images_folder = Folder(
+            name=folder_name,
+            description=f"Found {len(image_data_list)} GPS-tagged images",
+        )
+        doc.append(images_folder)
+        
+        # Add center point if provided
+        if center_coords:
+            lookat = LookAt(
+                range=200, latitude=center_coords[0], longitude=center_coords[1]
+            )
+            center_point = Placemark(
+                name="Center Point",
+                description=f"Center at {center_coords[0]:.6f}, {center_coords[1]:.6f}",
+                geometry=Point(center_coords[1], center_coords[0], 0),  # lon, lat
+                view=lookat,
+            )
+            images_folder.append(center_point)
+        
+        # Add each image as a placemark
+        for i, img_data in enumerate(image_data_list, 1):
+            description_parts = [f"<![CDATA[Image {i}"]
+            
+            # Add date if available
+            if img_data.get("date_taken"):
+                description_parts.append(f"<br/>Date: {img_data['date_taken']}")
+            
+            # Add image preview
+            description_parts.append(f'<br/><img style="max-width:500px;" src="file:///{self.get_kml_image_path(img_data["path"])}">]]>')
+            
+            description = "".join(description_parts)
+            
+            longi = float(img_data["longitude"])
+            lati = float(img_data["latitude"])
+            lookat = LookAt(range=50, latitude=lati, longitude=longi)
+            
+            k_point = Placemark(
+                name=img_data["filename"],
+                description=description,
+                geometry=Point(longi, lati, 0),
+                view=lookat,
+            )
+            images_folder.append(k_point)
+        
+        return k.to_string(prettyprint=True)
+
     def export_kml_data(self):
         """Export matched images to KML file for Google Earth."""
         if not self.export_kml:
@@ -1212,6 +1391,118 @@ resume = false          # Resume from previous interrupted search
             print(f"Exported {len(self.kml_results)} image locations to {kml_path}")
         except Exception as e:
             print(f"Error during KML export: {e}")
+
+    def export_kml_from_folder(self, folder_path: str, output_kml_path: str | None = None, recursive: bool = True) -> bool:
+        """
+        Generate KML from all GPS-tagged images in a folder.
+        
+        Args:
+            folder_path: Path to folder containing images
+            output_kml_path: Optional output path for KML file (defaults to folder_images.kml in current dir)
+            recursive: Whether to search subfolders recursively
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not KML_AVAILABLE:
+            print("Warning: KML export not available. Install 'fastkml' and 'shapely' packages.")
+            return False
+        
+        folder_path = self.normalize_path(folder_path)
+        if not os.path.exists(folder_path):
+            print(f"Error: Folder does not exist: {folder_path}")
+            return False
+        
+        if self.verbose:
+            print(f"Scanning folder for GPS-tagged images: {folder_path}")
+        
+        # Collect all image data
+        image_data_list = []
+        files_processed = 0
+        
+        if recursive:
+            # Walk through all subdirectories
+            for dirpath, _, filenames in os.walk(folder_path):
+                for filename in filenames:
+                    if self.is_jpeg_file(filename):
+                        image_path = os.path.join(dirpath, filename)
+                        files_processed += 1
+                        
+                        if self.verbose:
+                            print(f"Processing: {image_path}")
+                        else:
+                            print(".", end="", flush=True)
+                            if files_processed % 50 == 0:
+                                print(f" [{files_processed}]", flush=True)
+                        
+                        gps_data = self.extract_image_gps_data(image_path)
+                        if gps_data:
+                            image_data_list.append(gps_data)
+        else:
+            # Only scan the specified folder (not subdirectories)
+            try:
+                for filename in os.listdir(folder_path):
+                    if self.is_jpeg_file(filename):
+                        image_path = os.path.join(folder_path, filename)
+                        files_processed += 1
+                        
+                        if self.verbose:
+                            print(f"Processing: {image_path}")
+                        else:
+                            print(".", end="", flush=True)
+                            if files_processed % 50 == 0:
+                                print(f" [{files_processed}]", flush=True)
+                        
+                        gps_data = self.extract_image_gps_data(image_path)
+                        if gps_data:
+                            image_data_list.append(gps_data)
+            except (OSError, PermissionError) as e:
+                print(f"Error accessing folder: {e}")
+                return False
+        
+        if not self.verbose and files_processed > 0:
+            print()  # New line after progress dots
+        
+        print(f"Processed {files_processed} image files")
+        print(f"Found {len(image_data_list)} images with GPS data")
+        
+        if not image_data_list:
+            print("No GPS-tagged images found in the specified folder.")
+            return False
+        
+        # Calculate center point (centroid of all images)
+        total_lat = sum(img["latitude"] for img in image_data_list)
+        total_lon = sum(img["longitude"] for img in image_data_list)
+        center_coords = (total_lat / len(image_data_list), total_lon / len(image_data_list))
+        
+        if self.verbose:
+            print(f"Calculated center point: {center_coords[0]:.6f}, {center_coords[1]:.6f}")
+        
+        # Generate KML content
+        try:
+            folder_name = os.path.basename(folder_path) or "Images"
+            kml_content = self.build_kml_from_image_data(image_data_list, center_coords, folder_name)
+            
+            # Determine output path
+            if output_kml_path:
+                kml_path = Path(output_kml_path)
+            else:
+                safe_folder_name = self.sanitize_folder_name(folder_name)
+                kml_path = Path.cwd() / f"{safe_folder_name}_images.kml"
+            
+            # Write KML file
+            with open(kml_path, "w", encoding="utf-8") as f:
+                f.write(kml_content)
+            
+            self.fix_cdata_in_kml(kml_path)
+            print(f"KML file created: {kml_path}")
+            print(f"Exported {len(image_data_list)} GPS-tagged images to KML")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error creating KML file: {e}")
+            return False
 
     def add_kml_result(
         self,
