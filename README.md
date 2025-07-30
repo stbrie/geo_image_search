@@ -46,6 +46,51 @@ pip install -e .
 
 **Note:** All dependencies are required. The application will fail at import time if any are missing.
 
+## Geocoding Service Usage
+
+This application uses the **Nominatim** geocoding service provided by OpenStreetMap to convert addresses to coordinates. 
+
+### Important Usage Guidelines
+
+**REQUIRED**: You must provide a proper User-Agent string that identifies your application. This is both:
+- A technical requirement for the service to work
+- A courtesy requirement per OpenStreetMap's usage policy
+
+Configure your User-Agent in the configuration file:
+```toml
+[geocoding]
+user_agent = "MyApp/1.0 (your-email@example.com)"
+```
+
+Or via command line:
+```bash
+python -m geo_image_search --user-agent "MyApp/1.0 (your-email@example.com)" ...
+```
+
+### Usage Policy
+
+Please read and follow the **Nominatim Usage Policy**: https://operations.osmfoundation.org/policies/nominatim/
+
+**Key requirements:**
+- Provide a valid User-Agent identifying your application and contact information
+- Respect rate limits (max 1 request per second for continuous use)
+- Use appropriate bulk geocoding methods for large datasets
+- Consider setting up your own Nominatim instance for heavy usage
+
+**Good User-Agent examples:**
+- `geo_image_search/1.0 (john@example.com)`
+- `MyPhotoApp/2.1 +https://example.com/contact`
+- `Research Project XYZ (researcher@university.edu)`
+
+**Bad User-Agent examples:**
+- `geo_image_search/1.0` (no contact info)
+- `Mozilla/5.0` (pretending to be a browser)
+- `Python` (too generic)
+
+### Rate Limiting
+
+The application automatically includes timeout handling for geocoding requests. For large batches of address-to-coordinate conversions, the built-in timeouts and error handling will manage service availability.
+
 ## Architecture Overview
 
 The application is now organized into focused modules:

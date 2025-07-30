@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch, PropertyMock
 from geopy.distance import geodesic
 
 from geo_image_search.search import LocationSearchEngine
-from geo_image_search.types import SearchConfig, ImageData
+from geo_image_search.types import SearchConfig, GeocodingConfig, ImageData
 from geo_image_search.exceptions import GPSDataError, ConfigurationError
 
 
@@ -25,7 +25,8 @@ class TestLocationSearchEngine:
             longitude=-74.0060,
             radius=1.0
         )
-        self.search_engine = LocationSearchEngine(self.search_config, self.mock_logger)
+        self.geocoding_config = GeocodingConfig(user_agent="test_agent/1.0")
+        self.search_engine = LocationSearchEngine(self.search_config, self.geocoding_config, self.mock_logger)
 
     @pytest.mark.unit
     def test_search_engine_initialization(self):
@@ -49,7 +50,7 @@ class TestLocationSearchEngine:
         """
         with patch('geo_image_search.search.Nominatim', None):
             with pytest.raises(ImportError) as exc_info:
-                LocationSearchEngine(self.search_config, self.mock_logger)
+                LocationSearchEngine(self.search_config, self.geocoding_config, self.mock_logger)
             
             assert "geopy library is required" in str(exc_info.value)
             assert "pip install geopy" in str(exc_info.value)
@@ -77,7 +78,7 @@ class TestLocationSearchEngine:
             radius=1.0
         )
         
-        engine = LocationSearchEngine(config_with_coords, self.mock_logger)
+        engine = LocationSearchEngine(config_with_coords, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         engine.initialize_search_location()
         
         assert engine.search_coords == (40.7128, -74.0060)
@@ -107,7 +108,7 @@ class TestLocationSearchEngine:
             radius=1.0
         )
         
-        engine = LocationSearchEngine(config_with_address, self.mock_logger)
+        engine = LocationSearchEngine(config_with_address, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         engine.initialize_search_location()
         
         # Should have called geocoder
@@ -135,7 +136,7 @@ class TestLocationSearchEngine:
             radius=1.0
         )
         
-        engine = LocationSearchEngine(config_with_bad_address, self.mock_logger)
+        engine = LocationSearchEngine(config_with_bad_address, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         with pytest.raises(ConfigurationError) as exc_info:
             engine.initialize_search_location()
@@ -152,7 +153,7 @@ class TestLocationSearchEngine:
         """
         config_no_location = SearchConfig(radius=1.0)
         
-        engine = LocationSearchEngine(config_no_location, self.mock_logger)
+        engine = LocationSearchEngine(config_no_location, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         with pytest.raises(ConfigurationError) as exc_info:
             engine.initialize_search_location()
@@ -413,7 +414,7 @@ class TestLocationSearchEngine:
             longitude=-74.0060,
             radius=0.1  # 100 meters
         )
-        small_engine = LocationSearchEngine(small_config, self.mock_logger)
+        small_engine = LocationSearchEngine(small_config, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         assert small_engine.search_config.radius == 0.1
         
         # Test with large radius (regional level)
@@ -422,7 +423,7 @@ class TestLocationSearchEngine:
             longitude=-74.0060,
             radius=50.0  # 50 kilometers
         )
-        large_engine = LocationSearchEngine(large_config, self.mock_logger)
+        large_engine = LocationSearchEngine(large_config, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         assert large_engine.search_config.radius == 50.0
 
 
@@ -437,7 +438,8 @@ class TestLocationSearchIntegration:
             longitude=-74.0060,
             radius=1.0
         )
-        self.search_engine = LocationSearchEngine(self.search_config, self.mock_logger)
+        self.geocoding_config = GeocodingConfig(user_agent="test_agent/1.0")
+        self.search_engine = LocationSearchEngine(self.search_config, self.geocoding_config, self.mock_logger)
 
     @pytest.mark.unit
     @patch('geo_image_search.search.Nominatim')
@@ -460,13 +462,13 @@ class TestLocationSearchIntegration:
             radius=1.0
         )
         
-        LocationSearchEngine(config_with_address, self.mock_logger)
+        LocationSearchEngine(config_with_address, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         # Should have initialized Nominatim with user_agent
         mock_nominatim_class.assert_called_once()
         call_kwargs = mock_nominatim_class.call_args[1]
         assert 'user_agent' in call_kwargs
-        assert 'geo_image_search' in call_kwargs['user_agent']
+        assert 'test_agent' in call_kwargs['user_agent']
 
     @pytest.mark.unit
     def test_distance_calculation_accuracy(self):
@@ -507,7 +509,7 @@ class TestLocationSearchIntegration:
         )
         
         try:
-            engine = LocationSearchEngine(config_real_address, self.mock_logger)
+            engine = LocationSearchEngine(config_real_address, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
             coords = engine.search_coords
             
             # Times Square should be approximately at these coordinates
@@ -534,7 +536,7 @@ class TestLocationSearchIntegration:
             longitude=-74.0060,
             radius=0.0
         )
-        zero_engine = LocationSearchEngine(zero_config, self.mock_logger)
+        zero_engine = LocationSearchEngine(zero_config, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         with patch.object(zero_engine, 'calculate_distance_miles', return_value=0.0):
             assert zero_engine.is_within_radius(image_data) is True
@@ -548,7 +550,7 @@ class TestLocationSearchIntegration:
             longitude=-74.0060,
             radius=50000.0  # 50,000 km (larger than Earth's circumference)
         )
-        large_engine = LocationSearchEngine(large_config, self.mock_logger)
+        large_engine = LocationSearchEngine(large_config, GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         with patch.object(large_engine, 'calculate_distance_miles', return_value=20000):
             assert large_engine.is_within_radius(image_data) is True

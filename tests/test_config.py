@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch, mock_open
 import pytest
 
 from geo_image_search.config import ConfigurationManager
-from geo_image_search.types import SearchConfig, DirectoryConfig, OutputConfig, FilterConfig, ProcessingConfig
+from geo_image_search.types import SearchConfig, DirectoryConfig, OutputConfig, FilterConfig, ProcessingConfig, GeocodingConfig
 from geo_image_search.exceptions import ConfigurationError
 
 
@@ -310,7 +310,7 @@ class TestConfigurationManager:
         This test documents valid configuration combinations
         and shows configurations that pass validation.
         """
-        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig
+        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig, GeocodingConfig
         
         search_config = SearchConfig(address="Test City")
         directory_config = DirectoryConfig(root="/test", output_directory="/output")
@@ -318,6 +318,7 @@ class TestConfigurationManager:
         filter_config = FilterConfig()
         processing_config = ProcessingConfig()
         folder_kml_config = FolderKMLConfig()
+        geocoding_config = GeocodingConfig(user_agent="test_agent/1.0")
         
         app_config = ApplicationConfig(
             search=search_config,
@@ -326,6 +327,7 @@ class TestConfigurationManager:
             filter=filter_config,
             processing=processing_config,
             folder_kml=folder_kml_config,
+            geocoding=geocoding_config
         )
         
         # Should not raise any exceptions
@@ -339,7 +341,7 @@ class TestConfigurationManager:
         This test documents the requirement that save_addresses
         needs an output directory specified.
         """
-        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig
+        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig, GeocodingConfig
         
         search_config = SearchConfig()
         directory_config = DirectoryConfig(output_directory=None)
@@ -347,6 +349,7 @@ class TestConfigurationManager:
         filter_config = FilterConfig()
         processing_config = ProcessingConfig()
         folder_kml_config = FolderKMLConfig()
+        geocoding_config = GeocodingConfig(user_agent="test_agent/1.0")
         
         app_config = ApplicationConfig(
             search=search_config,
@@ -355,6 +358,7 @@ class TestConfigurationManager:
             filter=filter_config,
             processing=processing_config,
             folder_kml=folder_kml_config,
+            geocoding=geocoding_config
         )
         
         with pytest.raises(ConfigurationError) as exc_info:
@@ -371,12 +375,13 @@ class TestConfigurationManager:
         This test documents requirements for location-based sorting
         including output directory and find_only conflicts.
         """
-        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig
+        from geo_image_search.types import ApplicationConfig, ProcessingConfig, FolderKMLConfig, GeocodingConfig
         
         search_config = SearchConfig()
         filter_config = FilterConfig()
         processing_config = ProcessingConfig()
         folder_kml_config = FolderKMLConfig()
+        geocoding_config = GeocodingConfig(user_agent="test_agent/1.0")
         
         # Test sort_by_location with find_only conflict
         directory_config = DirectoryConfig(sort_by_location=True, find_only=True)
@@ -389,6 +394,7 @@ class TestConfigurationManager:
             filter=filter_config,
             processing=processing_config,
             folder_kml=folder_kml_config,
+            geocoding=geocoding_config
         )
         
         with pytest.raises(ConfigurationError) as exc_info:
@@ -407,6 +413,7 @@ class TestConfigurationManager:
             filter=filter_config,
             processing=processing_config,
             folder_kml=folder_kml_config,
+            geocoding=geocoding_config
         )
         
         with pytest.raises(ConfigurationError) as exc_info:

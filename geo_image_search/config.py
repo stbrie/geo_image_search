@@ -17,6 +17,7 @@ from .types import (
     OutputConfig,
     FilterConfig,
     ProcessingConfig,
+    GeocodingConfig,
     FolderKMLConfig,
     ApplicationConfig,
 )
@@ -151,6 +152,10 @@ class ConfigurationManager:
 
         processing_config = ProcessingConfig(resume=getattr(args, "resume", False))
 
+        geocoding_config = GeocodingConfig(
+            user_agent=getattr(args, "user_agent", Constants.DEFAULT_USER_AGENT)
+        )
+
         folder_kml_config = FolderKMLConfig()
 
         # Create configuration object
@@ -160,6 +165,7 @@ class ConfigurationManager:
             output=output_config,
             filter=filter_config,
             processing=processing_config,
+            geocoding=geocoding_config,
             folder_kml=folder_kml_config,
         )
 
@@ -338,6 +344,11 @@ class ConfigurationManager:
             help="Create a sample configuration file and exit (optionally specify path)",
         )
         parser.add_argument(
+            "--user-agent",
+            type=str,
+            help="User agent string for geocoding requests (should identify your application)",
+        )
+        parser.add_argument(
             "--sort-by-location",
             action="store_true",
             help="Sort images into subfolders by geographic clusters (uses radius for grouping)",
@@ -463,6 +474,7 @@ class ConfigurationManager:
             ("filters", "date_from", "date_from", "getattr_none_check"),
             ("filters", "date_to", "date_to", "getattr_none_check"),
             ("processing", "resume", "resume", "getattr_boolean_false_to_true"),
+            ("geocoding", "user_agent", "user_agent", "string_not_empty"),
             ("folder_kml", "export_folder_kml", "folder_path", "hasattr_empty_check"),
             ("folder_kml", "output_kml", "output_kml_path", "hasattr_empty_check"),
             ("folder_kml", "verbose", "verbose", "boolean_false_to_true"),
@@ -663,6 +675,11 @@ date_to = "2024-12-31"   # Filter images to this date (YYYY-MM-DD)
 [processing]
 # Processing behavior
 resume = false          # Resume from previous interrupted search
+
+[geocoding]
+# Geocoding service configuration
+# IMPORTANT: Please read Nominatim usage policy at https://operations.osmfoundation.org/policies/nominatim/
+user_agent = "geo_image_search/1.0"  # Required: Should identify your application and contact info
 
 [folder_kml]
 # Independent KML export from existing folders (bypasses normal search)

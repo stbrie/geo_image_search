@@ -56,6 +56,12 @@ class ProcessingConfig:
     resume: bool = False
 
 
+@dataclass  
+class GeocodingConfig:
+    """Geocoding configuration parameters."""
+    user_agent: str = "geo_image_search/1.0"
+
+
 @dataclass
 class FolderKMLConfig:
     """Folder KML export configuration parameters."""
@@ -79,4 +85,5 @@ class ApplicationConfig:
     output: OutputConfig
     filter: FilterConfig
     processing: ProcessingConfig
+    geocoding: GeocodingConfig
     folder_kml: FolderKMLConfig

@@ -9,13 +9,14 @@ from geopy.distance import distance
 from geopy.geocoders import Nominatim
 
 from .constants import Constants
-from .types import ImageData
+from .types import ImageData, GeocodingConfig
 
 
 class ClusteringEngine:
     """Handles geographic clustering of images."""
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, geocoding_config: GeocodingConfig, logger: logging.Logger):
+        self.geocoding_config = geocoding_config
         self.logger = logger
 
         if not distance or not Nominatim:
@@ -99,7 +100,7 @@ class ClusteringEngine:
 
         # Try to get address for cluster center
         try:
-            geolocator = Nominatim(user_agent=Constants.DEFAULT_USER_AGENT)
+            geolocator = Nominatim(user_agent=self.geocoding_config.user_agent)
             location_info = geolocator.reverse(
                 location, timeout=Constants.GEOCODING_TIMEOUT_SECONDS
             )

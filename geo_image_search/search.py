@@ -6,23 +6,23 @@ from geopy.distance import distance
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
-from .constants import Constants
 from .exceptions import ConfigurationError, GPSDataError
-from .types import SearchConfig
+from .types import SearchConfig, GeocodingConfig
 
 
 class LocationSearchEngine:
     """Handles location-based searching and distance calculations."""
     
-    def __init__(self, search_config: SearchConfig, logger: logging.Logger):
+    def __init__(self, search_config: SearchConfig, geocoding_config: GeocodingConfig, logger: logging.Logger):
         self.search_config = search_config
+        self.geocoding_config = geocoding_config
         self.logger = logger
         self.search_coords: tuple[float, float] | None = None
         
         if not Nominatim or not distance:
             raise ImportError("geopy library is required for location search. Install with: pip install geopy")
             
-        self.geolocator = Nominatim(user_agent=Constants.DEFAULT_USER_AGENT)
+        self.geolocator = Nominatim(user_agent=self.geocoding_config.user_agent)
         
     def initialize_search_location(self) -> None:
         """Initialize the search location from address or coordinates."""

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch, mock_open
 import pytest
 
 from geo_image_search.clustering import ClusteringEngine, CheckpointManager
+from geo_image_search.types import GeocodingConfig
 
 
 class TestClusteringEngine:
@@ -53,14 +54,14 @@ class TestClusteringEngine:
         the geopy dependency requirement.
         """
         # Test successful initialization
-        clustering_engine = ClusteringEngine(self.mock_logger)
+        clustering_engine = ClusteringEngine(GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         assert clustering_engine.logger == self.mock_logger
         
         # Test that geopy requirement is checked
         with patch('geo_image_search.clustering.distance', None):
             with pytest.raises(ImportError) as exc_info:
-                ClusteringEngine(self.mock_logger)
+                ClusteringEngine(GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
             
             assert "geopy library is required" in str(exc_info.value)
             assert "pip install geopy" in str(exc_info.value)
@@ -72,7 +73,7 @@ class TestClusteringEngine:
         This test documents the clustering behavior with the default 0.1 mile 
         radius and shows how images are grouped by proximity.
         """
-        clustering_engine = ClusteringEngine(self.mock_logger)
+        clustering_engine = ClusteringEngine(GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         # Mock geocoding to avoid network calls and ensure predictable names
         with patch('geo_image_search.clustering.Nominatim') as mock_nominatim:
@@ -121,7 +122,7 @@ class TestClusteringEngine:
         This test shows how the cluster_radius parameter affects clustering
         and documents the radius effect on grouping behavior.
         """
-        clustering_engine = ClusteringEngine(self.mock_logger)
+        clustering_engine = ClusteringEngine(GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         # Test with very small radius - should create more clusters
         small_radius_clusters = clustering_engine.cluster_images_by_location(
@@ -148,7 +149,7 @@ class TestClusteringEngine:
         This test documents how the clustering engine handles empty datasets
         and shows the expected return value.
         """
-        clustering_engine = ClusteringEngine(self.mock_logger)
+        clustering_engine = ClusteringEngine(GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         # Test with empty list
         empty_clusters = clustering_engine.cluster_images_by_location([])
@@ -164,7 +165,7 @@ class TestClusteringEngine:
         This test documents the cluster naming strategy and shows how
         cluster names are generated from coordinates and index.
         """
-        clustering_engine = ClusteringEngine(self.mock_logger)
+        clustering_engine = ClusteringEngine(GeocodingConfig(user_agent="test_agent/1.0"), self.mock_logger)
         
         # Test cluster name generation
         location = (40.7128, -74.0060)

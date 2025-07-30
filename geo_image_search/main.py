@@ -107,7 +107,7 @@ class SearchWorkflow:
         """
 
         # Initialize components
-        self._initialize_components(app_config.filter, app_config.search)
+        self._initialize_components(app_config.filter, app_config.search, app_config.geocoding)
 
         # Validate and set up directories
         root_path = self._validate_directories(app_config.directory)
@@ -137,7 +137,7 @@ class SearchWorkflow:
         self.checkpoint_manager.clear_checkpoint()
         self.logger.info("Search completed successfully")
 
-    def _initialize_components(self, filter_config, search_config):
+    def _initialize_components(self, filter_config, search_config, geocoding_config):
         """
         Initializes core components required for geo image search operations.
 
@@ -160,8 +160,8 @@ class SearchWorkflow:
         """
 
         self.gps_processor = GPSImageProcessor(filter_config, self.logger)
-        self.search_engine = LocationSearchEngine(search_config, self.logger)
-        self.clustering_engine = ClusteringEngine(self.logger)
+        self.search_engine = LocationSearchEngine(search_config, geocoding_config, self.logger)
+        self.clustering_engine = ClusteringEngine(geocoding_config, self.logger)
         self.checkpoint_manager = CheckpointManager(self.logger)
         self.csv_exporter = CSVExporter(self.logger)
         self.kml_exporter = KMLExporter(self.logger)
