@@ -152,6 +152,8 @@ class App:
         settings_menu = tk.Menu(menubar, tearoff=False)
         menubar.add_cascade(label="Settings", menu=settings_menu)
         settings_menu.add_command(label="Preferences…", command=self.show_preferences)
+        settings_menu.add_separator()
+        settings_menu.add_command(label="Clear geocode cache…", command=self.on_clear_geocode_cache)
 
         help_menu = tk.Menu(menubar, tearoff=False)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -317,6 +319,27 @@ class App:
                 txt.tag_add("h1", f"{i+1}.0", f"{i+1}.end")
             elif i + 1 < len(lines) and lines[i + 1].startswith("--") and line.strip():
                 txt.tag_add("h2", f"{i+1}.0", f"{i+1}.end")
+
+    def on_clear_geocode_cache(self) -> None:
+        try:
+            cache = geo_image_search._GeocodeCache(geo_image_search.GEOCODE_CACHE_FILE)
+            count = cache.size()
+        except Exception as e:
+            messagebox.showerror("Geocode cache", f"Could not open cache:\n{e}")
+            return
+        if count == 0:
+            messagebox.showinfo("Geocode cache", "Cache is already empty.")
+            cache.close()
+            return
+        if not messagebox.askyesno(
+            "Geocode cache",
+            f"Clear {count} cached entries? Future searches will re-query Nominatim.",
+        ):
+            cache.close()
+            return
+        removed = cache.clear()
+        cache.close()
+        messagebox.showinfo("Geocode cache", f"Cleared {removed} entries.")
 
     def show_about(self) -> None:
         messagebox.showinfo(

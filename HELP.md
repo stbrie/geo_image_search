@@ -128,6 +128,19 @@ with the CLI. The CLI auto-discovers it in any of:
     ~/.geo_image_search.toml
 
 
+Geocode cache
+-------------
+
+Reverse-geocode results (lat/lon → address) are cached in a small
+SQLite file at:
+    ~/.geo_image_search_cache.sqlite
+
+Coordinates within ~11m of an already-cached point reuse the existing
+answer, so repeated runs over the same library skip Nominatim's
+1-request-per-second wait. Settings → Clear geocode cache… wipes
+the file if you want to force fresh lookups.
+
+
 Tips
 ----
 

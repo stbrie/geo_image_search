@@ -31,10 +31,12 @@ Main functionality is provided through the GeoImageSearch class which manages:
 """
 import argparse
 import csv
+import json
 import os
 import pickle
 import re
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -66,6 +68,82 @@ except ImportError:
 
 CAMERA_ICON_URL = "http://maps.google.com/mapfiles/kml/shapes/camera.png"
 CAMERA_STYLE_ID = "cameraIcon"
+
+# Persistent reverse-geocode cache lives in the user's home so it survives
+# across runs and is shared between CLI and GUI.
+GEOCODE_CACHE_FILE = Path.home() / ".geo_image_search_cache.sqlite"
+
+
+class _GeocodeCache:
+    """SQLite-backed cache of Nominatim reverse-geocode results.
+
+    Keyed by lat/lon rounded to 4 decimals (~11m); two photos that close
+    share an entry, which matches typical consumer-GPS accuracy and gives
+    real hit rates without coarsening street-level answers.
+    """
+
+    _KEY_PRECISION = 4
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(path))
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reverse_geocode (
+                lat_key REAL NOT NULL,
+                lon_key REAL NOT NULL,
+                address TEXT NOT NULL,
+                raw_json TEXT,
+                PRIMARY KEY (lat_key, lon_key)
+            )
+            """
+        )
+        self.conn.commit()
+
+    @classmethod
+    def _key(cls, lat: float, lon: float) -> tuple[float, float]:
+        return (round(lat, cls._KEY_PRECISION), round(lon, cls._KEY_PRECISION))
+
+    def get(self, lat: float, lon: float) -> tuple[str | None, dict | None]:
+        """Return (address, raw) if cached, else (None, None)."""
+        cur = self.conn.execute(
+            "SELECT address, raw_json FROM reverse_geocode WHERE lat_key=? AND lon_key=?",
+            self._key(lat, lon),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None, None
+        address, raw_json = row
+        raw = json.loads(raw_json) if raw_json else None
+        return address, raw
+
+    def put(self, lat: float, lon: float, address: str, raw: dict | None = None) -> None:
+        raw_json = json.dumps(raw) if raw else None
+        lat_k, lon_k = self._key(lat, lon)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO reverse_geocode "
+            "(lat_key, lon_key, address, raw_json) VALUES (?, ?, ?, ?)",
+            (lat_k, lon_k, address, raw_json),
+        )
+        self.conn.commit()
+
+    def size(self) -> int:
+        cur = self.conn.execute("SELECT COUNT(*) FROM reverse_geocode")
+        return cur.fetchone()[0]
+
+    def clear(self) -> int:
+        """Delete all cached entries. Returns rows removed."""
+        cur = self.conn.execute("DELETE FROM reverse_geocode")
+        self.conn.commit()
+        return cur.rowcount
+
+    def close(self) -> None:
+        try:
+            self.conn.close()
+        except sqlite3.Error:
+            pass
 
 # HEIC support — register the pillow-heif plugin so PIL can open .heic/.heif.
 # Falls back gracefully if the package isn't installed.
@@ -731,6 +809,11 @@ resume = false          # Resume from previous interrupted search
         self.argv = list(argv) if argv is not None else sys.argv[1:]
         self.cancel_event: threading.Event | None = None
         self.geolocator = Nominatim(user_agent="github/stbrie: geo_image_search")
+        try:
+            self.geocode_cache: _GeocodeCache | None = _GeocodeCache(GEOCODE_CACHE_FILE)
+        except sqlite3.Error as e:
+            print(f"Warning: could not open geocode cache: {e}")
+            self.geocode_cache = None
         self.printed_directory = {}
         self.csv_data = []  # Store image data for CSV export
         self.last_geocode_time = 0  # Rate limiting for geocoding
@@ -949,6 +1032,41 @@ resume = false          # Resume from previous interrupted search
                 print(f"  -> {filename}: Error checking date: {e}")
             return False
 
+    def _reverse_geocode(self, lat: float, lon: float):
+        """Reverse-geocode lat/lon, going through the cache first.
+
+        Returns (address_str, raw_dict) on success, (None, None) on failure.
+        Rate-limits Nominatim to 1 req/s on cache miss.
+        """
+        if self.geocode_cache is not None:
+            addr, raw = self.geocode_cache.get(lat, lon)
+            if addr is not None:
+                return addr, raw
+
+        current_time = time.time()
+        if current_time - self.last_geocode_time < 1.0:
+            time.sleep(1.0 - (current_time - self.last_geocode_time))
+
+        try:
+            location = self.geolocator.reverse(f"{lat},{lon}", exactly_one=True)
+            self.last_geocode_time = time.time()
+        except (OSError, IOError, ValueError, GeocoderTimedOut, GeocoderServiceError) as e:
+            if self.verbose:
+                print(f"Reverse geocode failed for ({lat}, {lon}): {e}")
+            return None, None
+
+        if not location or not getattr(location, "address", None):
+            return None, None
+
+        raw = getattr(location, "raw", None)
+        if self.geocode_cache is not None:
+            try:
+                self.geocode_cache.put(lat, lon, location.address, raw)
+            except sqlite3.Error as e:
+                if self.verbose:
+                    print(f"Warning: could not write geocode cache: {e}")
+        return location.address, raw
+
     def load_and_validate_image(self, img_file, filename):
         ext = Path(filename).suffix.lower()
         try:
@@ -1026,17 +1144,8 @@ resume = false          # Resume from previous interrupted search
     def process_standard_image(self, dir_path, filename, lat_deg_dec, long_deg_dec):
         # Collect CSV data if requested (for all images with GPS, not just matches)
         if self.image_addresses and lat_deg_dec and long_deg_dec:
-            try:
-                # Rate limit geocoding requests (1 second minimum between requests)
-                current_time = time.time()
-                if current_time - self.last_geocode_time < 1.0:
-                    time.sleep(1.0 - (current_time - self.last_geocode_time))
-
-                # Get address for this location
-                location = self.geolocator.reverse(f"{lat_deg_dec}, {long_deg_dec}")
-                self.last_geocode_time = time.time()
-                address = location.address if location else "Unknown"
-            except (OSError, IOError, ValueError):
+            address, _ = self._reverse_geocode(lat_deg_dec, long_deg_dec)
+            if address is None:
                 address = "Geocoding failed"
 
             self.csv_data.append(
@@ -1450,18 +1559,16 @@ resume = false          # Resume from previous interrupted search
         avg_lon = sum(c[1] for c in coords_list) / len(coords_list)
 
         placename = None
-        try:
-            location = self.geolocator.reverse(f"{avg_lat},{avg_lon}", exactly_one=True)
-            if location and location.address:
-                placename = (
-                    location.raw.get("address", {}).get("neighbourhood")
-                    or location.raw.get("address", {}).get("suburb")
-                    or location.raw.get("address", {}).get("city")
-                    or location.address.split(",")[0]
-                )
-        except Exception as e:
-            if self.verbose:
-                print(f"Reverse geocoding failed for cluster center: {e}")
+        address, raw = self._reverse_geocode(avg_lat, avg_lon)
+        if raw:
+            addr_dict = raw.get("address", {}) if isinstance(raw, dict) else {}
+            placename = (
+                addr_dict.get("neighbourhood")
+                or addr_dict.get("suburb")
+                or addr_dict.get("city")
+            )
+        if not placename and address:
+            placename = address.split(",")[0]
 
         cluster_name = placename or f"Cluster_{len(self.location_clusters) + 1}_{lat:.3f}_{lon:.3f}"
         safe_name = self.sanitize_folder_name(cluster_name)
