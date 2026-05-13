@@ -36,6 +36,7 @@ import pickle
 import re
 import signal
 import sys
+import threading
 import time
 import tomllib
 from datetime import datetime
@@ -54,6 +55,7 @@ try:
     from fastkml.containers import Document, Folder
     from fastkml.views import LookAt
     from fastkml.features import Placemark
+    from fastkml.styles import IconStyle, Style, StyleUrl
     from pygeoif.geometry import Point
 
     KML_AVAILABLE = True
@@ -61,6 +63,9 @@ except ImportError:
     KML_AVAILABLE = False
     kml = None
     Point = None
+
+CAMERA_ICON_URL = "http://maps.google.com/mapfiles/kml/shapes/camera.png"
+CAMERA_STYLE_ID = "cameraIcon"
 
 
 class GeoImageSearch:  # pylint: disable=too-many-instance-attributes
@@ -199,8 +204,6 @@ verbose = false          # Enable verbose output
 
 [filters]
 # Advanced filtering options
-max_gps_error = 50.0     # Maximum GPS horizontal error in meters
-max_dop = 5.0           # Maximum Dilution of Precision
 date_from = "2020-01-01" # Filter images from this date (YYYY-MM-DD)
 date_to = "2024-12-31"   # Filter images to this date (YYYY-MM-DD)
 
@@ -239,7 +242,7 @@ resume = false          # Resume from previous interrupted search
             args.latitude = search_config["latitude"]
         if args.longitude is None and "longitude" in search_config:
             args.longitude = search_config["longitude"]
-        if args.radius == 0.1 and "radius" in search_config:  # 0.1 is default
+        if args.radius == 0.05 and "radius" in search_config:  # 0.05 is default
             args.radius = search_config["radius"]
         if not args.far and search_config.get("far", False):
             args.far = search_config["far"]
@@ -266,10 +269,6 @@ resume = false          # Resume from previous interrupted search
 
         # Filter settings
         filter_config = config_data.get("filters", {})
-        if args.max_gps_error is None and "max_gps_error" in filter_config:
-            args.max_gps_error = filter_config["max_gps_error"]
-        if args.max_dop is None and "max_dop" in filter_config:
-            args.max_dop = filter_config["max_dop"]
         if not args.date_from and "date_from" in filter_config:
             args.date_from = filter_config["date_from"]
         if not args.date_to and "date_to" in filter_config:
@@ -367,8 +366,8 @@ resume = false          # Resume from previous interrupted search
             "-r",
             "--radius",
             type=float,
-            default=0.1,
-            help="(optional, defaults to .1) the radius of the search in miles.",
+            default=0.05,
+            help="(optional, defaults to .05) the radius of the search in miles.",
         )
         parser.add_argument(
             "-x",
@@ -385,16 +384,6 @@ resume = false          # Resume from previous interrupted search
             "--export-kml",
             action="store_true",
             help="Export matched images as KML file for Google Earth",
-        )
-        parser.add_argument(
-            "--max-gps-error",
-            type=float,
-            help="Maximum GPS horizontal error in meters to accept (e.g., 50)",
-        )
-        parser.add_argument(
-            "--max-dop",
-            type=float,
-            help="Maximum Dilution of Precision value to accept (e.g., 5.0)",
         )
         parser.add_argument(
             "--date-from",
@@ -424,7 +413,7 @@ resume = false          # Resume from previous interrupted search
             help="Sort images into subfolders by geographic clusters (uses radius for grouping)",
         )
 
-        args = parser.parse_args()
+        args = parser.parse_args(self.argv)
 
         # Handle config file creation request early
         if args.create_config:
@@ -455,8 +444,6 @@ resume = false          # Resume from previous interrupted search
         self.resume = args.resume
         self.sort_by_location = args.sort_by_location
         self.export_kml = args.export_kml
-        self.max_gps_error = args.max_gps_error
-        self.max_dop = args.max_dop
 
         # Parse date filters
         self.date_from = None
@@ -488,13 +475,10 @@ resume = false          # Resume from previous interrupted search
 
         # Validate sort_by_location requirements
         if self.sort_by_location:
-            if self.find_only:
+            if not self.find_only and not self.user_output_directory:
                 print(
-                    "Error: --sort-by-location requires copying files (cannot use with --find_only)"
+                    "Error: --sort-by-location requires --output_directory when copying files"
                 )
-                sys.exit(15)
-            if not self.user_output_directory:
-                print("Error: --sort-by-location requires --output_directory to be specified")
                 sys.exit(16)
             if self.verbose:
                 print("Location-based sorting enabled: grouping images by geographic clusters")
@@ -515,23 +499,16 @@ resume = false          # Resume from previous interrupted search
 
     def normalize_path(self, path_str):
         """
-        Normalize a file path by converting backslashes to forward slashes and
-        converting Windows drive paths to WSL mount format.
+        Normalize a file path to an absolute path appropriate for the host OS.
 
-        Args:
-            path_str (str): The file path string to normalize
-
-        Returns:
-            str: The normalized absolute path with forward slashes. Windows drive
-                 paths (e.g., "C:\\folder") are converted to WSL format
-                 (e.g., "/mnt/c/folder")
-
-        Example:
-            >>> self.normalize_path("C:\\Users\\name\\file.txt")
-            "/mnt/c/Users/name/file.txt"
-            >>> self.normalize_path("/home/user/file.txt")
-            "/home/user/file.txt"
+        On native Windows the path is kept in Windows form (drive letters preserved).
+        On Linux/macOS, Windows-style drive paths (e.g. "C:\\folder") are converted
+        to WSL mount form ("/mnt/c/folder") so the same config files work under WSL.
         """
+        if platform.system() == "Windows":
+            # Keep native Windows paths; just resolve to absolute.
+            return str(Path(path_str).resolve())
+
         normalized = path_str.replace("\\", "/")
         if len(normalized) > 1 and normalized[1] == ":":
             drive = normalized[0].lower()
@@ -611,31 +588,23 @@ resume = false          # Resume from previous interrupted search
             - May normalize self.user_output_directory path
         """
 
-        if not self.find_only:
-            if not self.user_output_directory:
-                print("No output directory specified and not find only. Use one or the other.")
-                sys.exit(3)
-            else:
-                self.user_output_directory = self.normalize_path(self.user_output_directory)
+        if self.user_output_directory:
+            self.user_output_directory = self.normalize_path(self.user_output_directory)
+            self.output_directory = self.user_output_directory
 
-                if self.verbose:
-                    print("User output directory: " + self.user_output_directory)
-
-                od_path = Path(self.user_output_directory)
-                od_stripped = re.sub(r'[<>:"|?*]', "_", od_path.name)
-                self.output_directory = str(
-                    Path(str(self.root_images_directory)) / "geo_loc" / od_stripped
+            if self.verbose:
+                print("Output directory: " + self.output_directory)
+            if self.find_only:
+                print(
+                    "Find-only mode: image files will NOT be copied, but the "
+                    "output directory will be used for CSV/KML exports."
                 )
-
-                if self.verbose:
-                    print("   Output directory: " + self.output_directory)
+        elif self.find_only:
+            print("Finding and outputting image path only.")
+            self.output_directory = "Do Not Save"
         else:
-            if self.user_output_directory:
-                print("--find_only set and User Output Directory set.  Use one or the other.")
-                sys.exit(4)
-            else:
-                print("Finding and outputting image path only.")
-                self.output_directory = "Do Not Save"
+            print("No output directory specified and not find only. Use one or the other.")
+            sys.exit(3)
 
     def set_directories(self):
         """
@@ -673,7 +642,7 @@ resume = false          # Resume from previous interrupted search
         else:
             pass
 
-    def __init__(self):
+    def __init__(self, argv=None):
         self.find_only = False
         self.opts = None
         self.args = None
@@ -695,7 +664,8 @@ resume = false          # Resume from previous interrupted search
         self.resume = False
         self.sort_by_location = False
         self.location_clusters = []  # Store location clusters for sorting
-        self.argv = sys.argv[1:]
+        self.argv = list(argv) if argv is not None else sys.argv[1:]
+        self.cancel_event: threading.Event | None = None
         self.geolocator = Nominatim(user_agent="github/stbrie: geo_image_search")
         self.printed_directory = {}
         self.csv_data = []  # Store image data for CSV export
@@ -705,8 +675,6 @@ resume = false          # Resume from previous interrupted search
         self.config_file = None
         self.config_data = {}
         self.export_kml = False
-        self.max_gps_error = None
-        self.max_dop = None
         self.date_from = None
         self.date_to = None
         self.checkpoint_file = None
@@ -937,9 +905,8 @@ resume = false          # Resume from previous interrupted search
         # Find or create appropriate cluster
         cluster_folder = self.find_or_create_cluster(lat_deg_dec, long_deg_dec)
 
-        # Copy image to cluster folder
-        destination = os.path.join(cluster_folder, filename)
         source_path = os.path.join(dir_path, filename)
+        destination = os.path.join(cluster_folder, filename)
 
         # Handle duplicate filenames
         counter = 1
@@ -950,10 +917,11 @@ resume = false          # Resume from previous interrupted search
             counter += 1
 
         try:
-            copyfile(source_path, destination)
+            if not self.find_only:
+                copyfile(source_path, destination)
+                if self.verbose:
+                    print(f"  -> Copied to {destination}")
             self.increment_cluster_count(cluster_folder)
-            if self.verbose:
-                print(f"  -> Copied to {destination}")
 
             # Add to CSV data if requested
             if self.image_addresses:
@@ -1014,6 +982,7 @@ resume = false          # Resume from previous interrupted search
             image_loc = (lat_deg_dec, long_deg_dec)
             distance_miles = distance.distance(self.search_coords, image_loc).miles
             if distance_miles < self.radius:
+                source_path = os.path.join(dir_path, filename)
                 if self.verbose:
                     print(
                         f"+ {filename}: {lat_deg_dec:.7n}, {long_deg_dec:.7n} ({distance_miles:.3n})"
@@ -1026,7 +995,6 @@ resume = false          # Resume from previous interrupted search
                     print(f"   + {filename} {distance_miles:.2f}mi")
                 if self.output_directory and not self.find_only:
                     destination = f"{self.output_directory}/{filename}"
-                    source_path = os.path.join(dir_path, filename)
 
                     # Handle duplicate filenames
                     if os.path.exists(destination):
@@ -1040,9 +1008,10 @@ resume = false          # Resume from previous interrupted search
 
                     copyfile(source_path, destination)
 
-                # Add to KML results if KML export is enabled
+                # Add to KML results if KML export is enabled — store the
+                # full source path so Google Earth can resolve thumbnails.
                 self.add_kml_result(
-                    filename, dir_path, lat_deg_dec, long_deg_dec, distance_miles, ""
+                    filename, source_path, lat_deg_dec, long_deg_dec, distance_miles, ""
                 )
 
                 return True  # Indicate a match was found
@@ -1147,11 +1116,18 @@ resume = false          # Resume from previous interrupted search
             assert Point is not None
             k = KML()
 
+            # Shared camera icon style for all photo placemarks.
+            camera_style = Style(
+                id=CAMERA_STYLE_ID,
+                styles=[IconStyle(icon_href=CAMERA_ICON_URL)],
+            )
+
             # Create document
             doc = Document(
                 id="geo_image_search_results",
                 name="Geo Image Search Results",
                 description="Images found within search radius",
+                styles=[camera_style],
             )
 
             k.append(doc)
@@ -1194,6 +1170,7 @@ resume = false          # Resume from previous interrupted search
                         description=description,
                         geometry=Point(longi, lati, 0),
                         view=lookat,
+                        style_url=StyleUrl(url=f"#{CAMERA_STYLE_ID}"),
                     )
                     search_folder.append(k_point)
 
@@ -1421,8 +1398,10 @@ resume = false          # Resume from previous interrupted search
         safe_name = self.sanitize_folder_name(cluster_name)
         cluster_folder = os.path.join(self.output_directory, safe_name)
 
-        # Create the cluster directory
-        os.makedirs(cluster_folder, exist_ok=True)
+        # Only create a real directory when we'll actually copy files into it.
+        # In find-only mode the cluster is a logical grouping for KML only.
+        if not self.find_only and self.output_directory != "Do Not Save":
+            os.makedirs(cluster_folder, exist_ok=True)
 
         # Add to clusters list
         new_cluster = {
@@ -1516,39 +1495,35 @@ resume = false          # Resume from previous interrupted search
                         print(f"  {name1} <-> {name2}: {dist:.2f} miles")
 
 
-if __name__ == "__main__":
-    # Signal handler for clean exit
+def main(argv=None, cancel_event=None):
+    """
+    Run the geo image search. Used by both the CLI and the GUI.
+
+    Args:
+        argv: argument list (excluding program name); defaults to sys.argv[1:].
+        cancel_event: optional threading.Event. When set, the file walk exits
+                      cleanly after saving a checkpoint — used by the GUI's
+                      Cancel button.
+    """
+    files_processed = 0
+    gis = GeoImageSearch(argv=argv)
+    gis.cancel_event = cancel_event
+
     def signal_handler(signum, frame):  # noqa: ARG001
-        """
-        Handles interruption signals (e.g., Ctrl+C) during file processing.
-
-        On receiving an interrupt signal, this function:
-        - Prints the number of files processed so far.
-        - Saves a checkpoint to allow resuming the process later.
-        - Exports any partial CSV data if available.
-        - Instructs the user on how to resume the process.
-        - Exits the program gracefully.
-
-        Args:
-            signum (int): The signal number received.
-            frame (FrameType): The current stack frame (unused).
-        """
+        """SIGINT handler: save checkpoint and exit cleanly."""
         print(f"\nInterrupted by user. Processed {files_processed} files so far.")
-
-        # Save checkpoint on interruption
         print("Saving checkpoint for resume...")
         gis.save_checkpoint()
-
         if gis.image_addresses and gis.csv_data:
             print("Saving partial CSV data...")
             gis.export_csv_data()
-
         print("Use --resume flag to continue from where you left off.")
         sys.exit(1)
 
-    signal.signal(signal.SIGINT, signal_handler)
-
-    gis = GeoImageSearch()
+    # signal.signal() only works from the main thread; from a GUI worker thread
+    # we rely on cancel_event instead.
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, signal_handler)
 
     print(f"1. {hasattr(gis, 'search_coords')=}")
 
@@ -1561,11 +1536,15 @@ if __name__ == "__main__":
     print(f"Search radius: {gis.radius} miles")
     print("-" * 50)
 
-    files_processed = 0
     images_found = 0
     start_time = time.time()
+    cancelled = False
 
     for dirpath, dirnames, filenames in os.walk(str(gis.root_images_directory)):
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
+
         # Skip the output directory to avoid processing copied images
         if gis.output_directory != "Do Not Save":
             try:
@@ -1585,6 +1564,10 @@ if __name__ == "__main__":
                 print(f" [{files_processed} processed]", flush=True)
 
         for file_name in filenames:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+
             if gis.is_jpeg_file(file_name):
                 # Check if this file was already processed (for resume functionality)
                 file_id = gis.get_file_identifier(dirpath, file_name)
@@ -1619,8 +1602,21 @@ if __name__ == "__main__":
                     # Always mark as processed even if there was an error
                     gis.processed_files_set.add(file_id)
 
+        if cancelled:
+            break
+
     end_time = time.time()
     elapsed_time = end_time - start_time
+
+    if cancelled:
+        print(f"\nCancelled by user. Processed {files_processed} files so far.")
+        print("Saving checkpoint for resume...")
+        gis.save_checkpoint()
+        if gis.image_addresses and gis.csv_data:
+            print("Saving partial CSV data...")
+            gis.export_csv_data()
+        print("Use --resume flag to continue from where you left off.")
+        return
 
     print(f"\nProcessed {files_processed} image files in {elapsed_time:.1f} seconds")
 
@@ -1650,3 +1646,7 @@ if __name__ == "__main__":
 
     # Clean up checkpoint file on successful completion
     gis.cleanup_checkpoint()
+
+
+if __name__ == "__main__":
+    main()
