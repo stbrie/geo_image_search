@@ -26,7 +26,7 @@ SETTINGS_FILE = Path.home() / ".geo_image_search_gui.json"
 # Keys persisted in SETTINGS_FILE. Mix of strings (paths, radius) and bools
 # (option flags). Keys must match App.vars so values can be poked straight in.
 _SETTINGS_KEYS: tuple[str, ...] = (
-    "root", "output_directory", "radius",
+    "root", "output_directory", "radius", "cluster_radius",
     "copy_files", "save_addresses", "verbose", "far",
     "resume", "export_kml", "sort_by_location",
 )
@@ -98,7 +98,10 @@ _FORM_ROWS: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
         ("longitude", "Longitude (decimal)", "--longitude", None),
         ("date_to", "Date to (YYYY-MM-DD)", "--date-to", None),
     ]),
-    ("narrow", [("radius", "Radius (miles)", "--radius", None)]),
+    ("pair", [
+        ("radius", "Radius (miles)", "--radius", None),
+        ("cluster_radius", "Cluster radius (yd)", "--cluster-radius", None),
+    ]),
     ("wide", [("root", "Images root directory", "--root", "dir")]),
     ("wide", [("output_directory", "Output directory", "--output_directory", "dir")]),
 ]

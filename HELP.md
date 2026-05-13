@@ -24,10 +24,16 @@ Latitude / Longitude
     without geocoding, or when you're searching offline.
 
 Radius (miles)
-    How far from the center to look. Defaults to 0.1 miles (~530 ft).
+    How far from the center to look. Defaults to 0.05 miles (~265 ft).
     Tip: start small (0.25–0.5) for a known address; widen if you get
-    no hits. With "Sort by location" enabled, this is the clustering
-    distance instead of the search radius.
+    no hits.
+
+Cluster radius (yards)
+    Only used when "Sort by location" is on. Sets the grouping
+    distance in YARDS — typical values are 50–500 yd. Any photo
+    within this distance of an existing cluster's anchor point
+    joins that cluster. Leave blank to reuse the search Radius
+    (which is in miles). Bigger value → fewer, larger groups.
 
 
 Directories
@@ -80,10 +86,15 @@ Export KML for Google Earth
     Earth to see the photos as pinned placemarks (with thumbnails).
 
 Sort by location (cluster into folders)
-    Instead of filtering by a single center point, group ALL geo-tagged
-    photos into folders by geographic proximity. The Radius value
-    becomes the clustering distance. Requires Output directory and is
-    incompatible with Find only.
+    Group geo-tagged photos by geographic proximity. Each cluster
+    becomes its own KML folder (and, when copying is enabled, its own
+    disk folder under the Output directory). Use Cluster radius to
+    control the grouping distance; if blank it falls back to Radius.
+
+    Works in any combination with Copy files:
+      * Copy on  + Output dir: disk folders AND KML folders
+      * Copy off + Output dir: KML folders, no disk copies
+      * Copy off, no Output dir: KML folders in the working directory
 
 
 Filters

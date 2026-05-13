@@ -187,6 +187,7 @@ address = "New York, NY"  # Default address for search center
 # latitude = 40.7128      # Alternative: use coordinates instead of address  
 # longitude = -74.0060
 radius = 1.0              # Search radius in miles
+# cluster_radius = 100    # Group radius in YARDS for sort_by_location (defaults to "radius" in miles)
 far = false              # Show images outside radius
 
 [directories] 
@@ -244,6 +245,8 @@ resume = false          # Resume from previous interrupted search
             args.longitude = search_config["longitude"]
         if args.radius == 0.05 and "radius" in search_config:  # 0.05 is default
             args.radius = search_config["radius"]
+        if args.cluster_radius is None and "cluster_radius" in search_config:
+            args.cluster_radius = search_config["cluster_radius"]
         if not args.far and search_config.get("far", False):
             args.far = search_config["far"]
 
@@ -370,6 +373,12 @@ resume = false          # Resume from previous interrupted search
             help="(optional, defaults to .05) the radius of the search in miles.",
         )
         parser.add_argument(
+            "--cluster-radius",
+            type=float,
+            help="(optional) Radius in YARDS used for grouping when "
+            "--sort-by-location is set. Defaults to --radius (which is in miles).",
+        )
+        parser.add_argument(
             "-x",
             "--far",
             action="store_true",
@@ -410,7 +419,8 @@ resume = false          # Resume from previous interrupted search
         parser.add_argument(
             "--sort-by-location",
             action="store_true",
-            help="Sort images into subfolders by geographic clusters (uses radius for grouping)",
+            help="Group images into geographic clusters (uses --cluster-radius if set, "
+            "else --radius). Disk folders only when copying; KML always grouped.",
         )
 
         args = parser.parse_args(self.argv)
@@ -441,6 +451,11 @@ resume = false          # Resume from previous interrupted search
         self.lat = args.latitude
         self.lon = args.longitude
         self.radius = args.radius
+        # cluster_radius is entered in YARDS; we store it in miles so it's
+        # directly comparable to geopy's distance.miles in find_or_create_cluster.
+        self.cluster_radius = (
+            args.cluster_radius / 1760.0 if args.cluster_radius is not None else None
+        )
         self.resume = args.resume
         self.sort_by_location = args.sort_by_location
         self.export_kml = args.export_kml
@@ -660,6 +675,7 @@ resume = false          # Resume from previous interrupted search
         self.lat = None  # the center of the target location
         self.lon = None  # the center of the target location
         self.radius: float | None = None  # the set by getopts.
+        self.cluster_radius: float | None = None  # overrides radius for clustering
         self.far = False
         self.resume = False
         self.sort_by_location = False
@@ -1352,11 +1368,9 @@ resume = false          # Resume from previous interrupted search
         Returns:
             Folder path for the cluster
         """
-        if not self.radius:
-            # Fallback radius if not set
-            radius = 1.0
-        else:
-            radius = self.radius
+        # Cluster radius overrides the search radius for grouping; fall back
+        # to search radius, then to 1.0 if neither is set.
+        radius = self.cluster_radius or self.radius or 1.0
 
         image_coords = (lat, lon)
 
