@@ -9,6 +9,9 @@
 geopy==2.4.1
 exif==1.6.1
 
+# HEIC support — registers .heic/.heif as PIL openers. Pulls in pillow.
+pillow-heif==1.3.0
+
 # KML export
 fastkml==1.4.0
 pygeoif==1.6.0

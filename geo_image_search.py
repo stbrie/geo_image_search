@@ -67,6 +67,60 @@ except ImportError:
 CAMERA_ICON_URL = "http://maps.google.com/mapfiles/kml/shapes/camera.png"
 CAMERA_STYLE_ID = "cameraIcon"
 
+# HEIC support — register the pillow-heif plugin so PIL can open .heic/.heif.
+# Falls back gracefully if the package isn't installed.
+try:
+    import pillow_heif
+    from PIL import Image as PILImage
+
+    pillow_heif.register_heif_opener()
+    HEIC_AVAILABLE = True
+except ImportError:
+    HEIC_AVAILABLE = False
+    PILImage = None
+
+
+class _PILExifAdapter:
+    """Expose PIL's EXIF data via the attribute names the `exif` library uses,
+    so HEIC files flow through the same downstream code as JPEG without changes.
+
+    Only the fields downstream code reads are exposed; missing tags raise
+    AttributeError on access, matching the `exif` library's behavior.
+    """
+
+    _GPS_IFD = 0x8825
+    _EXIF_IFD = 0x8769
+    _DATETIME = 0x0132
+
+    def __init__(self, pil_img):
+        exif_data = pil_img.getexif()
+        try:
+            gps = exif_data.get_ifd(self._GPS_IFD) or {}
+        except (KeyError, AttributeError):
+            gps = {}
+        try:
+            ifd = exif_data.get_ifd(self._EXIF_IFD) or {}
+        except (KeyError, AttributeError):
+            ifd = {}
+
+        # GPS sub-IFD: 1=lat_ref ('N'/'S'), 2=lat, 3=lon_ref ('E'/'W'), 4=lon
+        if 1 in gps:
+            self.gps_latitude_ref = gps[1]
+        if 2 in gps:
+            self.gps_latitude = gps[2]
+        if 3 in gps:
+            self.gps_longitude_ref = gps[3]
+        if 4 in gps:
+            self.gps_longitude = gps[4]
+
+        # Datetimes
+        if 0x9003 in ifd:
+            self.datetime_original = ifd[0x9003]
+        if 0x9004 in ifd:
+            self.datetime_digitized = ifd[0x9004]
+        if self._DATETIME in exif_data:
+            self.datetime = exif_data[self._DATETIME]
+
 
 class GeoImageSearch:  # pylint: disable=too-many-instance-attributes
     """
@@ -102,7 +156,9 @@ class GeoImageSearch:  # pylint: disable=too-many-instance-attributes
         # Process images using calc_distance() method
     """
 
-    JPEG_EXTENSIONS = {".jpg", ".jpeg", ".JPG", ".JPEG"}
+    JPEG_EXTENSIONS = {".jpg", ".jpeg"}
+    HEIC_EXTENSIONS = {".heic", ".heif"}
+    SUPPORTED_EXTENSIONS = JPEG_EXTENSIONS | HEIC_EXTENSIONS
 
     def load_config_file(self, config_path: str | Path | None = None) -> dict:
         """
@@ -530,17 +586,9 @@ resume = false          # Resume from previous interrupted search
             normalized = f"/mnt/{drive}{normalized[2:]}"
         return str(Path(normalized).resolve())
 
-    def is_jpeg_file(self, filename):
-        """
-        Check if a file is a JPEG image based on its file extension.
-
-        Args:
-            filename (str or Path): The path to the file to check.
-
-        Returns:
-            bool: True if the file has a JPEG extension, False otherwise.
-        """
-        return Path(filename).suffix.lower() in GeoImageSearch.JPEG_EXTENSIONS
+    def is_supported_image_file(self, filename):
+        """Return True if the file is a JPEG or HEIC image we can process."""
+        return Path(filename).suffix.lower() in GeoImageSearch.SUPPORTED_EXTENSIONS
 
     def set_root_images_directory(self):
         """
@@ -902,8 +950,16 @@ resume = false          # Resume from previous interrupted search
             return False
 
     def load_and_validate_image(self, img_file, filename):
+        ext = Path(filename).suffix.lower()
         try:
-            my_image = Image(img_file)
+            if ext in GeoImageSearch.HEIC_EXTENSIONS:
+                if not HEIC_AVAILABLE:
+                    if self.verbose:
+                        print(f"Skipping HEIC file (pillow-heif not installed): {filename}")
+                    return False
+                pil_img = PILImage.open(img_file)
+                return _PILExifAdapter(pil_img)
+            return Image(img_file)
         except (OSError, IOError, MemoryError) as e:
             if self.verbose:
                 print(f"Error reading {filename}. Corrupt file? {e}")
@@ -912,7 +968,6 @@ resume = false          # Resume from previous interrupted search
             if self.verbose:
                 print(f"Invalid image format {filename}: {e}")
             return False
-        return my_image
 
     def process_clustered_image(self, dir_path, filename, lat_deg_dec, long_deg_dec):
         if self.verbose:
@@ -1582,7 +1637,7 @@ def main(argv=None, cancel_event=None):
                 cancelled = True
                 break
 
-            if gis.is_jpeg_file(file_name):
+            if gis.is_supported_image_file(file_name):
                 # Check if this file was already processed (for resume functionality)
                 file_id = gis.get_file_identifier(dirpath, file_name)
                 if file_id in gis.processed_files_set:

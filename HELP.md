@@ -1,8 +1,12 @@
 Geo Image Search — Field Reference
 ==================================
 
-This tool walks a folder of JPEG photos, reads each one's GPS metadata,
-and either lists or copies the ones near a target location.
+This tool walks a folder of JPEG or HEIC photos, reads each one's GPS
+metadata, and either lists or copies the ones near a target location.
+
+Supported formats: .jpg / .jpeg (always) and .heic / .heif (when the
+`pillow-heif` package is installed — it ships with the requirements
+file, so this is the default).
 
 
 Search parameters
