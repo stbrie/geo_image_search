@@ -200,20 +200,46 @@ class App:
             pass  # non-critical; user can retry by changing any field
 
     def _wire_exclusions(self) -> None:
-        """Make Address and Latitude/Longitude mutually exclusive."""
-        for key in ("address", "latitude", "longitude"):
-            self.vars[key].trace_add("write", lambda *_a: self._update_exclusions())
-        self._update_exclusions()
+        """Track which center-input mode (address vs coords) is active.
+        Both sets of entries stay visible with their text intact; the
+        inactive set is readonly (focusable + selectable but not typable),
+        so a single click/Tab into the other set flips the mode."""
+        self.center_mode: str | None = None
+        self.entries["address"].bind(
+            "<FocusIn>", lambda _e: self._set_center_mode("address")
+        )
+        for key in ("latitude", "longitude"):
+            self.entries[key].bind(
+                "<FocusIn>", lambda _e: self._set_center_mode("coords")
+            )
+        self._infer_initial_center_mode()
 
-    def _update_exclusions(self) -> None:
+    def _infer_initial_center_mode(self) -> None:
         has_addr = bool(str(self.vars["address"].get()).strip())
         has_coords = bool(str(self.vars["latitude"].get()).strip()) or bool(
             str(self.vars["longitude"].get()).strip()
         )
-        self.entries["address"].configure(state="disabled" if has_coords else "normal")
-        state = "disabled" if has_addr else "normal"
-        self.entries["latitude"].configure(state=state)
-        self.entries["longitude"].configure(state=state)
+        if has_addr and not has_coords:
+            self._set_center_mode("address")
+        elif has_coords and not has_addr:
+            self._set_center_mode("coords")
+        elif has_addr and has_coords:
+            # Both saved — pick address as the tie-break so the user sees
+            # a clear "active" choice; clicking into lat/lon flips it.
+            self._set_center_mode("address")
+        else:
+            # Neither filled — leave all three editable so first click decides.
+            self._set_center_mode(None)
+
+    def _set_center_mode(self, mode: str | None) -> None:
+        if getattr(self, "center_mode", None) == mode:
+            return
+        self.center_mode = mode
+        addr_active = mode in (None, "address")
+        coords_active = mode in (None, "coords")
+        self.entries["address"].configure(state="normal" if addr_active else "readonly")
+        self.entries["latitude"].configure(state="normal" if coords_active else "readonly")
+        self.entries["longitude"].configure(state="normal" if coords_active else "readonly")
 
     def _wire_mutex_exclusion(self) -> None:
         """Behave like a deselectable radio: turning on one mutex-paired
@@ -534,7 +560,19 @@ class App:
             checked = bool(self.vars[key].get())
             if checked is not invert:  # checked & !invert, OR unchecked & invert
                 argv.append(flag)
+
+        # Drop the inactive center mode's fields. Their text stays in the
+        # form (for next time) but isn't passed to the CLI.
+        if self.center_mode == "address":
+            skip_keys = {"latitude", "longitude"}
+        elif self.center_mode == "coords":
+            skip_keys = {"address"}
+        else:
+            skip_keys = set()
+
         for key, _label, flag, _browse in _STR_FIELDS:
+            if key in skip_keys:
+                continue
             v = str(self.vars[key].get()).strip()
             if v:
                 argv.extend([flag, v])
