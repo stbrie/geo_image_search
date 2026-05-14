@@ -80,9 +80,9 @@ _BOOL_FIELDS: list[tuple[str, str, str, bool, bool]] = [
     ("far", "Also show images outside radius", "--far", False, False),
     ("resume", "Resume from previous checkpoint", "--resume", False, False),
     ("export_kml", "Export KML for Google Earth", "--export-kml", False, False),
-    ("sort_by_location", "Sort by location (cluster into folders)", "--sort-by-location", False, False),
+    ("sort_by_location", "Multiple Locations", "--sort-by-location", False, False),
     ("overwrite", "Overwrite existing files (don't auto-rename)", "--overwrite", False, False),
-    ("single_location", "Single location (one nested folder; needs address or lat/lon)", "--single-location", False, False),
+    ("single_location", "Single Location", "--single-location", False, False),
 ]
 
 # Bool keys that are mutually exclusive — only one may be checked at a time.
