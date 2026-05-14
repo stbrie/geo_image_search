@@ -28,7 +28,7 @@ SETTINGS_FILE = Path.home() / ".geo_image_search_gui.json"
 _SETTINGS_KEYS: tuple[str, ...] = (
     "root", "output_directory", "radius", "cluster_radius",
     "copy_files", "save_addresses", "verbose", "far",
-    "resume", "export_kml", "sort_by_location",
+    "resume", "export_kml", "sort_by_location", "overwrite",
 )
 
 
@@ -80,6 +80,7 @@ _BOOL_FIELDS: list[tuple[str, str, str, bool, bool]] = [
     ("resume", "Resume from previous checkpoint", "--resume", False, False),
     ("export_kml", "Export KML for Google Earth", "--export-kml", False, False),
     ("sort_by_location", "Sort by location (cluster into folders)", "--sort-by-location", False, False),
+    ("overwrite", "Overwrite existing files (don't auto-rename)", "--overwrite", False, False),
 ]
 
 # Form rows. Each row is (kind, [field, ...]):

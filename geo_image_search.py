@@ -41,7 +41,7 @@ import sys
 import threading
 import time
 import tomllib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copyfile
 import platform
@@ -200,6 +200,136 @@ class _PILExifAdapter:
             self.datetime = exif_data[self._DATETIME]
 
 
+class _Mp4MetadataAdapter:
+    """Expose MP4/MOV/M4V metadata via the same attribute names the `exif`
+    library uses, so the existing GPS-extraction and date-range pipeline can
+    consume videos without changes.
+
+    Reads the QuickTime/ISO BMFF atom tree:
+      - moov/udta/(c)xyz  -> ISO 6709 location string set by iPhone/Android
+      - moov/mvhd          -> creation_time (seconds since 1904-01-01 UTC)
+
+    GPS is exposed as a fake DMS tuple of (decimal_degrees, 0, 0) plus an
+    N/S/E/W ref, so convert_dhms_to_decimal() reconstructs the original
+    decimal value. Modern iOS also writes location to moov/meta/keys+ilst;
+    we don't parse that yet because (c)xyz is still written alongside it.
+    """
+
+    _MAC_EPOCH_OFFSET = 2082844800  # seconds between 1904-01-01 and 1970-01-01
+
+    def __init__(self, file_obj):
+        file_obj.seek(0, 2)
+        file_size = file_obj.tell()
+        file_obj.seek(0)
+
+        gps_payload = self._find_atom_path(
+            file_obj, file_size, [b"moov", b"udta", b"\xa9xyz"]
+        )
+        if gps_payload:
+            lat, lon = self._parse_iso6709(gps_payload)
+            if lat is not None and lon is not None:
+                self.gps_latitude = (abs(lat), 0.0, 0.0)
+                self.gps_latitude_ref = "N" if lat >= 0 else "S"
+                self.gps_longitude = (abs(lon), 0.0, 0.0)
+                self.gps_longitude_ref = "E" if lon >= 0 else "W"
+
+        mvhd_payload = self._find_atom_path(file_obj, file_size, [b"moov", b"mvhd"])
+        if mvhd_payload:
+            dt_str = self._parse_mvhd_creation_time(mvhd_payload)
+            if dt_str:
+                self.datetime_original = dt_str
+
+    @staticmethod
+    def _read_atom_header(f, end_offset):
+        """Return (type_bytes, payload_offset, atom_end_offset) for the atom at
+        the current file position, or None on EOF / malformed header."""
+        atom_start = f.tell()
+        if atom_start + 8 > end_offset:
+            return None
+        size_bytes = f.read(4)
+        type_bytes = f.read(4)
+        if len(size_bytes) < 4 or len(type_bytes) < 4:
+            return None
+        size = int.from_bytes(size_bytes, "big")
+        if size == 1:
+            ext = f.read(8)
+            if len(ext) < 8:
+                return None
+            size = int.from_bytes(ext, "big")
+        elif size == 0:
+            size = end_offset - atom_start
+        if size < 8 or atom_start + size > end_offset:
+            return None
+        return type_bytes, f.tell(), atom_start + size
+
+    @classmethod
+    def _find_atom_in_range(cls, f, end_offset, target):
+        while f.tell() < end_offset:
+            hdr = cls._read_atom_header(f, end_offset)
+            if hdr is None:
+                return None
+            atype, payload_start, atom_end = hdr
+            if atype == target:
+                return payload_start, atom_end
+            f.seek(atom_end)
+        return None
+
+    @classmethod
+    def _find_atom_path(cls, f, file_size, path):
+        """Walk nested atoms, returning the bytes of the deepest atom's payload."""
+        f.seek(0)
+        end = file_size
+        payload_start = atom_end = 0
+        for atom_type in path:
+            found = cls._find_atom_in_range(f, end, atom_type)
+            if found is None:
+                return None
+            payload_start, atom_end = found
+            f.seek(payload_start)
+            end = atom_end
+        return f.read(atom_end - payload_start)
+
+    @staticmethod
+    def _parse_iso6709(payload):
+        # (c)xyz is a QuickTime string atom: 2-byte length + 2-byte language code,
+        # then the ISO 6709 string ("+37.7749-122.4194/" or with altitude).
+        if len(payload) < 4:
+            return None, None
+        s = payload[4:].decode("latin-1", errors="replace").rstrip("\x00").rstrip("/")
+        m = re.match(r"^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)", s)
+        if not m:
+            return None, None
+        try:
+            return float(m.group(1)), float(m.group(2))
+        except ValueError:
+            return None, None
+
+    @classmethod
+    def _parse_mvhd_creation_time(cls, payload):
+        if len(payload) < 4:
+            return None
+        version = payload[0]
+        if version == 1:
+            if len(payload) < 12:
+                return None
+            ct = int.from_bytes(payload[4:12], "big")
+        else:
+            if len(payload) < 8:
+                return None
+            ct = int.from_bytes(payload[4:8], "big")
+        if ct == 0:
+            return None
+        unix_ts = ct - cls._MAC_EPOCH_OFFSET
+        if unix_ts < 0:
+            return None
+        try:
+            return datetime.fromtimestamp(unix_ts, tz=timezone.utc).strftime(
+                "%Y:%m:%d %H:%M:%S"
+            )
+        except (ValueError, OverflowError, OSError):
+            return None
+
+
 class GeoImageSearch:  # pylint: disable=too-many-instance-attributes
     """
     A class for searching and filtering JPEG images based on their GPS metadata location.
@@ -236,7 +366,8 @@ class GeoImageSearch:  # pylint: disable=too-many-instance-attributes
 
     JPEG_EXTENSIONS = {".jpg", ".jpeg"}
     HEIC_EXTENSIONS = {".heic", ".heif"}
-    SUPPORTED_EXTENSIONS = JPEG_EXTENSIONS | HEIC_EXTENSIONS
+    VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v"}
+    SUPPORTED_EXTENSIONS = JPEG_EXTENSIONS | HEIC_EXTENSIONS | VIDEO_EXTENSIONS
 
     def load_config_file(self, config_path: str | Path | None = None) -> dict:
         """
@@ -330,6 +461,7 @@ root = "/path/to/photos"          # Root directory to search for images
 output_directory = "found_images" # Output directory for matched images
 find_only = false                # Only find images, don't copy them
 sort_by_location = false         # Sort images into subfolders by geographic clusters
+overwrite = false                # Overwrite existing files instead of auto-renaming
 
 [output]
 # Output and export options
@@ -394,6 +526,8 @@ resume = false          # Resume from previous interrupted search
             args.find_only = dir_config["find_only"]
         if not args.sort_by_location and dir_config.get("sort_by_location", False):
             args.sort_by_location = dir_config["sort_by_location"]
+        if not args.overwrite and dir_config.get("overwrite", False):
+            args.overwrite = dir_config["overwrite"]
 
         # Output settings
         output_config = config_data.get("output", {})
@@ -556,6 +690,12 @@ resume = false          # Resume from previous interrupted search
             help="Group images into geographic clusters (uses --cluster-radius if set, "
             "else --radius). Disk folders only when copying; KML always grouped.",
         )
+        parser.add_argument(
+            "--overwrite",
+            action="store_true",
+            help="Overwrite files in the output directory instead of auto-renaming "
+            "duplicates with a numeric suffix.",
+        )
 
         args = parser.parse_args(self.argv)
 
@@ -593,6 +733,7 @@ resume = false          # Resume from previous interrupted search
         self.resume = args.resume
         self.sort_by_location = args.sort_by_location
         self.export_kml = args.export_kml
+        self.overwrite = args.overwrite
 
         # Parse date filters
         self.date_from = None
@@ -805,6 +946,7 @@ resume = false          # Resume from previous interrupted search
         self.far = False
         self.resume = False
         self.sort_by_location = False
+        self.overwrite = False
         self.location_clusters = []  # Store location clusters for sorting
         self.argv = list(argv) if argv is not None else sys.argv[1:]
         self.cancel_event: threading.Event | None = None
@@ -842,18 +984,19 @@ resume = false          # Resume from previous interrupted search
         """
         self.get_opts()
 
-        # Skip location setup if we're in sort-by-location mode
-        if not self.sort_by_location:
+        has_center = bool(self.address) or (self.lat is not None and self.lon is not None)
+
+        if has_center:
             if self.address:
                 try:
                     self.location = self.geolocator.geocode(query=self.address)
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
                     print(f"Geocoding failed: {e}")
                     sys.exit(6)
-            elif self.lon and self.lat:
+            else:
                 try:
                     self.location = self.geolocator.reverse(
-                        query=f"{str(self.lat)}, {str(self.lon)}"
+                        query=f"{self.lat}, {self.lon}"
                     )
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
                     print(f"Latitude, Longitude does not return a valid location object: {e}")
@@ -861,15 +1004,26 @@ resume = false          # Resume from previous interrupted search
 
             if self.location:
                 self.search_coords = (self.location.latitude, self.location.longitude)
-                print(f"Nominatum address: {self.location.address}")
-                print(f"Lat, Lon: {str(self.location.latitude)}, {str(self.location.longitude)}")
+                print(f"Nominatim address: {self.location.address}")
+                print(f"Lat, Lon: {self.location.latitude}, {self.location.longitude}")
+                if self.sort_by_location:
+                    cluster_yards = (self.cluster_radius or self.radius) * 1760.0
+                    print(
+                        f"Sort-by-location + center: keeping images within "
+                        f"{self.radius} mi of center, then clustering by "
+                        f"{cluster_yards:.0f} yd."
+                    )
             else:
                 print("No location from Nominatim")
                 sys.exit(9)
-        else:
+        elif self.sort_by_location:
             print("Location-based sorting mode: grouping all images by geographic clusters")
             if self.verbose:
-                print(f"Using radius of {self.radius} miles for clustering")
+                cluster_radius_miles = self.cluster_radius or self.radius
+                print(f"Using cluster radius of {cluster_radius_miles} miles for grouping")
+        else:
+            print("No address or coordinates provided for search center.")
+            sys.exit(9)
 
         self.set_directories()
 
@@ -1077,6 +1231,8 @@ resume = false          # Resume from previous interrupted search
                     return False
                 pil_img = PILImage.open(img_file)
                 return _PILExifAdapter(pil_img)
+            if ext in GeoImageSearch.VIDEO_EXTENSIONS:
+                return _Mp4MetadataAdapter(img_file)
             return Image(img_file)
         except (OSError, IOError, MemoryError) as e:
             if self.verbose:
@@ -1097,13 +1253,14 @@ resume = false          # Resume from previous interrupted search
         source_path = os.path.join(dir_path, filename)
         destination = os.path.join(cluster_folder, filename)
 
-        # Handle duplicate filenames
-        counter = 1
-        original_destination = destination
-        while os.path.exists(destination):
-            name, ext = os.path.splitext(original_destination)
-            destination = f"{name}_{counter:03d}{ext}"
-            counter += 1
+        # Handle duplicate filenames unless overwriting was explicitly requested.
+        if not self.overwrite:
+            counter = 1
+            original_destination = destination
+            while os.path.exists(destination):
+                name, ext = os.path.splitext(original_destination)
+                destination = f"{name}_{counter:03d}{ext}"
+                counter += 1
 
         try:
             if not self.find_only:
@@ -1120,6 +1277,7 @@ resume = false          # Resume from previous interrupted search
                         "path": source_path,
                         "latitude": lat_deg_dec,
                         "longitude": long_deg_dec,
+                        "address": "",
                         "cluster_folder": os.path.basename(cluster_folder),
                     }
                 )
@@ -1155,6 +1313,7 @@ resume = false          # Resume from previous interrupted search
                     "latitude": lat_deg_dec,
                     "longitude": long_deg_dec,
                     "address": address,
+                    "cluster_folder": "",
                 }
             )
 
@@ -1176,8 +1335,8 @@ resume = false          # Resume from previous interrupted search
                 if self.output_directory and not self.find_only:
                     destination = f"{self.output_directory}/{filename}"
 
-                    # Handle duplicate filenames
-                    if os.path.exists(destination):
+                    # Handle duplicate filenames unless overwriting was requested.
+                    if not self.overwrite and os.path.exists(destination):
                         base, ext = os.path.splitext(filename)
                         counter = 1
                         while os.path.exists(f"{self.output_directory}/{base}_{counter}{ext}"):
@@ -1251,7 +1410,19 @@ resume = false          # Resume from previous interrupted search
             return False
 
         if self.sort_by_location:
-            # Location-based sorting mode
+            # If the user also gave a search center, honor --radius before clustering.
+            # (Standard mode applies the same check inside process_standard_image.)
+            if self.search_coords and self.radius:
+                distance_miles = distance.distance(
+                    self.search_coords, (lat_deg_dec, long_deg_dec)
+                ).miles
+                if distance_miles >= self.radius:
+                    if self.verbose:
+                        print(
+                            f"  -> {filename}: {distance_miles:.2f}mi from center, "
+                            f"outside {self.radius}mi radius"
+                        )
+                    return False
             return self.process_clustered_image(dir_path, filename, lat_deg_dec, long_deg_dec)
         else:
             # Original distance-based logic for standard search mode
@@ -1268,17 +1439,29 @@ resume = false          # Resume from previous interrupted search
             print("Cannot export CSV in find-only mode.")
             return
 
-        csv_path = os.path.join(self.output_directory, "image_addresses.csv")
+        csv_path = Path(self.output_directory) / "image_addresses.csv"
+        tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
+        fieldnames = [
+            "filename",
+            "path",
+            "latitude",
+            "longitude",
+            "address",
+            "cluster_folder",
+        ]
         try:
-            with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
-                fieldnames = ["filename", "path", "latitude", "longitude", "address"]
+            with open(tmp_path, "w", newline="", encoding="utf-8") as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(self.csv_data)
-
+            tmp_path.replace(csv_path)
             print(f"Exported {len(self.csv_data)} image addresses to {csv_path}")
-        except (OSError, IOError) as e:
+        except (OSError, IOError, ValueError) as e:
             print(f"Error writing CSV file: {e}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def export_kml_data(self):
         """Export matched images to KML file for Google Earth."""
@@ -1338,10 +1521,12 @@ resume = false          # Resume from previous interrupted search
 
                 for res in results:
                     counter += 1
-                    description = (
-                        f"<![CDATA[Found File {counter}"
-                        f'<img style="max-width:500px;" src="file:///{self.get_kml_image_path(res['path'])}">]]>'
-                    )
+                    media_path = self.get_kml_image_path(res["path"])
+                    if Path(res["path"]).suffix.lower() in GeoImageSearch.VIDEO_EXTENSIONS:
+                        media_html = f'<a href="file:///{media_path}">Open video</a>'
+                    else:
+                        media_html = f'<img style="max-width:500px;" src="file:///{media_path}">'
+                    description = f"<![CDATA[Found File {counter}{media_html}]]>"
                     longi = float(res.get("longitude", 0))
                     lati = float(res.get("latitude", 0))
                     lookat = LookAt(range=50, latitude=lati, longitude=longi)
@@ -1808,7 +1993,7 @@ def main(argv=None, cancel_event=None):
             print(f"Match rate: {(images_found/files_processed)*100:.1f}% of processed files")
 
     if files_processed == 0:
-        print("No JPEG files found in the specified directory.")
+        print("No supported image or video files found in the specified directory.")
     elif images_found == 0:
         print("No images found within the search radius. Try increasing the radius with -r")
 
