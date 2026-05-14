@@ -29,6 +29,7 @@ _SETTINGS_KEYS: tuple[str, ...] = (
     "root", "output_directory", "radius", "cluster_radius",
     "copy_files", "save_addresses", "verbose", "far",
     "resume", "export_kml", "sort_by_location", "overwrite",
+    "single_location",
 )
 
 
@@ -81,7 +82,13 @@ _BOOL_FIELDS: list[tuple[str, str, str, bool, bool]] = [
     ("export_kml", "Export KML for Google Earth", "--export-kml", False, False),
     ("sort_by_location", "Sort by location (cluster into folders)", "--sort-by-location", False, False),
     ("overwrite", "Overwrite existing files (don't auto-rename)", "--overwrite", False, False),
+    ("single_location", "Single location (one nested folder; needs address or lat/lon)", "--single-location", False, False),
 ]
+
+# Bool keys that are mutually exclusive — only one may be checked at a time.
+# Rendered on their own row with an "— OR —" label, and a write trace keeps
+# the other disabled while one is selected.
+_MUTEX_PAIR: tuple[str, str] = ("sort_by_location", "single_location")
 
 # Form rows. Each row is (kind, [field, ...]):
 #   "wide"   — one field spanning the full width (optionally with a Browse button)
@@ -136,6 +143,7 @@ class App:
         self.out_q: queue.Queue = queue.Queue()
         self.vars: dict[str, tk.Variable] = {}
         self.entries: dict[str, ttk.Entry] = {}
+        self.bool_widgets: dict[str, ttk.Checkbutton] = {}
 
         self._save_after_id: str | None = None
 
@@ -144,6 +152,7 @@ class App:
         self._apply_defaults()
         self._wire_autosave()
         self._wire_exclusions()
+        self._wire_mutex_exclusion()
         self._poll()
 
     def _build_menu(self) -> None:
@@ -205,6 +214,24 @@ class App:
         state = "disabled" if has_addr else "normal"
         self.entries["latitude"].configure(state=state)
         self.entries["longitude"].configure(state=state)
+
+    def _wire_mutex_exclusion(self) -> None:
+        """Disable one of the mutex-paired checkboxes when the other is on."""
+        for key in _MUTEX_PAIR:
+            self.vars[key].trace_add("write", lambda *_a: self._update_mutex())
+        self._update_mutex()
+
+    def _update_mutex(self) -> None:
+        a, b = _MUTEX_PAIR
+        va = bool(self.vars[a].get())
+        vb = bool(self.vars[b].get())
+        # Defensive: if a hand-edited settings file turned both on, clear
+        # the first. The re-fired trace settles state.
+        if va and vb:
+            self.vars[a].set(False)
+            return
+        self.bool_widgets[a].configure(state="disabled" if vb else "normal")
+        self.bool_widgets[b].configure(state="disabled" if va else "normal")
 
     def show_preferences(self) -> None:
         win = tk.Toplevel(self.root)
@@ -414,13 +441,36 @@ class App:
         # Boolean options --------------------------------------------------
         opts = ttk.LabelFrame(outer, text="Options", padding=8)
         opts.pack(fill=tk.X, pady=(8, 0))
-        # Two columns of checkboxes
-        for i, (key, label, _flag, default, _invert) in enumerate(_BOOL_FIELDS):
+
+        # Regular checkboxes laid out in two columns, skipping the mutex pair.
+        mutex_keys = set(_MUTEX_PAIR)
+        regular_fields = [t for t in _BOOL_FIELDS if t[0] not in mutex_keys]
+        for i, (key, label, _flag, default, _invert) in enumerate(regular_fields):
             var = tk.BooleanVar(value=default)
             self.vars[key] = var
-            ttk.Checkbutton(opts, text=label, variable=var).grid(
-                row=i // 2, column=i % 2, sticky="w", padx=4, pady=2
-            )
+            cb = ttk.Checkbutton(opts, text=label, variable=var)
+            cb.grid(row=i // 2, column=i % 2, sticky="w", padx=4, pady=2)
+            self.bool_widgets[key] = cb
+
+        # Mutex pair: own row, separated by "— OR —".
+        mutex_row_idx = (len(regular_fields) + 1) // 2
+        mutex_frame = ttk.Frame(opts)
+        mutex_frame.grid(
+            row=mutex_row_idx, column=0, columnspan=2, sticky="w", padx=4, pady=(8, 2)
+        )
+        spec_by_key = {t[0]: t for t in _BOOL_FIELDS}
+        for half, key in enumerate(_MUTEX_PAIR):
+            _, label, _flag, default, _invert = spec_by_key[key]
+            var = tk.BooleanVar(value=default)
+            self.vars[key] = var
+            cb = ttk.Checkbutton(mutex_frame, text=label, variable=var)
+            cb.pack(side=tk.LEFT)
+            self.bool_widgets[key] = cb
+            if half == 0:
+                ttk.Label(
+                    mutex_frame, text="  — OR —  ", foreground="gray"
+                ).pack(side=tk.LEFT)
+
         opts.columnconfigure(0, weight=1)
         opts.columnconfigure(1, weight=1)
 

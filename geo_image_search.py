@@ -462,6 +462,7 @@ output_directory = "found_images" # Output directory for matched images
 find_only = false                # Only find images, don't copy them
 sort_by_location = false         # Sort images into subfolders by geographic clusters
 overwrite = false                # Overwrite existing files instead of auto-renaming
+single_location = false          # Treat search as a single address; nest output under country/state/city/...
 
 [output]
 # Output and export options
@@ -528,6 +529,8 @@ resume = false          # Resume from previous interrupted search
             args.sort_by_location = dir_config["sort_by_location"]
         if not args.overwrite and dir_config.get("overwrite", False):
             args.overwrite = dir_config["overwrite"]
+        if not args.single_location and dir_config.get("single_location", False):
+            args.single_location = dir_config["single_location"]
 
         # Output settings
         output_config = config_data.get("output", {})
@@ -696,6 +699,15 @@ resume = false          # Resume from previous interrupted search
             help="Overwrite files in the output directory instead of auto-renaming "
             "duplicates with a numeric suffix.",
         )
+        parser.add_argument(
+            "--single-location",
+            action="store_true",
+            help="Treat the search as a single location rather than discovering "
+            "clusters. Requires --address or --latitude/--longitude. All in-radius "
+            "matches go into one nested folder built from the structured address "
+            "(country/state/city/postcode/road/number). Mutually exclusive with "
+            "--sort-by-location.",
+        )
 
         args = parser.parse_args(self.argv)
 
@@ -734,6 +746,7 @@ resume = false          # Resume from previous interrupted search
         self.sort_by_location = args.sort_by_location
         self.export_kml = args.export_kml
         self.overwrite = args.overwrite
+        self.single_location = args.single_location
 
         # Parse date filters
         self.date_from = None
@@ -772,6 +785,22 @@ resume = false          # Resume from previous interrupted search
                 sys.exit(16)
             if self.verbose:
                 print("Location-based sorting enabled: grouping images by geographic clusters")
+
+        # Validate single_location requirements
+        if self.single_location:
+            if self.sort_by_location:
+                print("Error: --single-location and --sort-by-location are mutually exclusive")
+                sys.exit(18)
+            if not self.address and (self.lat is None or self.lon is None):
+                print(
+                    "Error: --single-location requires --address or --latitude/--longitude"
+                )
+                sys.exit(17)
+            if not self.find_only and not self.user_output_directory:
+                print(
+                    "Error: --single-location requires --output_directory when copying files"
+                )
+                sys.exit(19)
 
         if self.verbose:
             print(f"Configuration file: {self.config_file or 'None'}")
@@ -947,6 +976,12 @@ resume = false          # Resume from previous interrupted search
         self.resume = False
         self.sort_by_location = False
         self.overwrite = False
+        self.single_location = False
+        # When single_location is active, these hold the structured pieces of
+        # the chosen center so find_or_create_cluster can build a nested path
+        # and a readable display name without redoing the Nominatim lookup.
+        self._single_location_path_parts: list[str] | None = None
+        self._single_location_display: str | None = None
         self.location_clusters = []  # Store location clusters for sorting
         self.argv = list(argv) if argv is not None else sys.argv[1:]
         self.cancel_event: threading.Event | None = None
@@ -1012,6 +1047,25 @@ resume = false          # Resume from previous interrupted search
                         f"Sort-by-location + center: keeping images within "
                         f"{self.radius} mi of center, then clustering by "
                         f"{cluster_yards:.0f} yd."
+                    )
+                if self.single_location:
+                    # Reverse-geocode (uses the SQLite cache) so we get a
+                    # structured address regardless of whether the user gave
+                    # us an address string or raw coordinates.
+                    _, raw = self._reverse_geocode(
+                        self.search_coords[0], self.search_coords[1]
+                    )
+                    self._single_location_path_parts = (
+                        self._build_single_location_path_parts(raw)
+                    )
+                    fallback = self.address or f"{self.search_coords[0]:.5f}_{self.search_coords[1]:.5f}"
+                    self._single_location_display = (
+                        self._build_single_location_display(raw, fallback)
+                    )
+                    nested = "/".join(self._single_location_path_parts or [])
+                    print(
+                        f"Single-location mode: in-radius matches go under "
+                        f"{nested or self._single_location_display}"
                     )
             else:
                 print("No location from Nominatim")
@@ -1409,9 +1463,9 @@ resume = false          # Resume from previous interrupted search
                 print(f"  -> {filename}: No GPS coordinates found")
             return False
 
-        if self.sort_by_location:
-            # If the user also gave a search center, honor --radius before clustering.
-            # (Standard mode applies the same check inside process_standard_image.)
+        if self.sort_by_location or self.single_location:
+            # Honor --radius before clustering/collecting. (Standard mode
+            # applies the same check inside process_standard_image.)
             if self.search_coords and self.radius:
                 distance_miles = distance.distance(
                     self.search_coords, (lat_deg_dec, long_deg_dec)
@@ -1454,14 +1508,43 @@ resume = false          # Resume from previous interrupted search
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(self.csv_data)
-            tmp_path.replace(csv_path)
+            self._atomic_replace_with_retry(tmp_path, csv_path)
             print(f"Exported {len(self.csv_data)} image addresses to {csv_path}")
+        except PermissionError as e:
+            print(
+                f"Error writing CSV file: {csv_path} appears to be locked "
+                f"(open in Excel, or being synced by OneDrive/Dropbox?). "
+                f"Close it and re-run. Underlying error: {e}"
+            )
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         except (OSError, IOError, ValueError) as e:
             print(f"Error writing CSV file: {e}")
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    @staticmethod
+    def _atomic_replace_with_retry(
+        tmp_path: Path, dest_path: Path, attempts: int = 3, backoff_s: float = 0.2
+    ) -> None:
+        """os.replace, but tolerate brief Windows file locks (OneDrive, AV
+        scanners, an Explorer thumbnailer) by retrying a few times before
+        giving up. Raises the last PermissionError on final failure."""
+        last_exc: PermissionError | None = None
+        for i in range(attempts):
+            try:
+                tmp_path.replace(dest_path)
+                return
+            except PermissionError as e:
+                last_exc = e
+                if i < attempts - 1:
+                    time.sleep(backoff_s)
+        assert last_exc is not None
+        raise last_exc
 
     def export_kml_data(self):
         """Export matched images to KML file for Google Earth."""
@@ -1706,6 +1789,80 @@ resume = false          # Resume from previous interrupted search
 
         return safe_name or "Unknown_Location"
 
+    @staticmethod
+    def _nominatim_address_dict(raw):
+        """Return the inner address-fields dict from a Nominatim raw response."""
+        if not isinstance(raw, dict):
+            return {}
+        addr = raw.get("address")
+        return addr if isinstance(addr, dict) else {}
+
+    @classmethod
+    def _build_single_location_path_parts(cls, raw):
+        """Build the nested path components for single-location output, ordered
+        country / state / city / postcode / road / house_number. Missing
+        fields are skipped. Returns None if nothing usable was found."""
+        addr = cls._nominatim_address_dict(raw)
+        if not addr:
+            return None
+
+        parts: list[str] = []
+
+        cc = addr.get("country_code")
+        if cc:
+            parts.append(str(cc).upper())
+
+        # ISO3166-2-lvl4 gives a uniform subdivision code (e.g. "US-MD",
+        # "GB-LND"); fall back to the spelled-out state/region.
+        state_iso = addr.get("ISO3166-2-lvl4") or ""
+        if "-" in state_iso:
+            parts.append(state_iso.split("-", 1)[1])
+        elif addr.get("state"):
+            parts.append(addr["state"])
+
+        city = (
+            addr.get("city")
+            or addr.get("town")
+            or addr.get("village")
+            or addr.get("hamlet")
+            or addr.get("suburb")
+        )
+        if city:
+            parts.append(city)
+
+        if addr.get("postcode"):
+            parts.append(addr["postcode"])
+
+        if addr.get("road"):
+            parts.append(addr["road"])
+
+        if addr.get("house_number"):
+            parts.append(addr["house_number"])
+
+        return parts or None
+
+    @classmethod
+    def _build_single_location_display(cls, raw, fallback):
+        """Human-readable one-line address for KML / verbose output. Falls
+        back to the supplied string when Nominatim couldn't be parsed."""
+        addr = cls._nominatim_address_dict(raw)
+        if not addr:
+            return fallback
+
+        street = None
+        if addr.get("house_number") and addr.get("road"):
+            street = f"{addr['house_number']} {addr['road']}"
+        elif addr.get("road"):
+            street = addr["road"]
+
+        city = addr.get("city") or addr.get("town") or addr.get("village")
+        state_iso = addr.get("ISO3166-2-lvl4") or ""
+        state_code = state_iso.split("-", 1)[1] if "-" in state_iso else None
+        locale = ", ".join(p for p in (city, state_code, addr.get("postcode")) if p)
+
+        line = ", ".join(p for p in (street, locale) if p)
+        return line or fallback
+
     def find_or_create_cluster(self, lat: float, lon: float) -> str:
         """
         Find an existing cluster within radius or create a new one.
@@ -1717,11 +1874,38 @@ resume = false          # Resume from previous interrupted search
         Returns:
             Folder path for the cluster
         """
+        image_coords = (lat, lon)
+
+        # Single-location mode: one fixed cluster, name & path derived from
+        # the search center's structured address. All matches collapse here.
+        if self.single_location:
+            if self.location_clusters:
+                return self.location_clusters[0]["folder_path"]
+
+            parts = self._single_location_path_parts or []
+            safe_parts = [self.sanitize_folder_name(p) for p in parts if p]
+            relative = os.path.join(*safe_parts) if safe_parts else "Single_Location"
+            cluster_folder = os.path.join(self.output_directory, relative)
+
+            if not self.find_only and self.output_directory != "Do Not Save":
+                os.makedirs(cluster_folder, exist_ok=True)
+
+            name = self._single_location_display or relative
+            self.location_clusters.append(
+                {
+                    "name": name,
+                    "center": self.search_coords or image_coords,
+                    "folder_path": cluster_folder,
+                    "image_count": 0,
+                }
+            )
+            if self.verbose:
+                print(f"  -> Single-location target: {name}")
+            return cluster_folder
+
         # Cluster radius overrides the search radius for grouping; fall back
         # to search radius, then to 1.0 if neither is set.
         radius = self.cluster_radius or self.radius or 1.0
-
-        image_coords = (lat, lon)
 
         # Check if this location is within radius of any existing cluster
         for cluster in self.location_clusters:
@@ -1819,13 +2003,19 @@ resume = false          # Resume from previous interrupted search
             - Assumes each cluster is a dict with keys: "folder_path", "center", and "image_count".
         """
 
-        if not self.sort_by_location or not self.location_clusters:
+        if (not self.sort_by_location and not self.single_location) or not self.location_clusters:
             return
 
-        print("\nLocation Clustering Summary:")
-        print(
-            f"Created {len(self.location_clusters)} geographic clusters using {self.radius} mile radius:"
-        )
+        if self.single_location:
+            print("\nSingle-Location Summary:")
+            print(
+                f"All matched images placed in one folder ({self.radius} mile radius):"
+            )
+        else:
+            print("\nLocation Clustering Summary:")
+            print(
+                f"Created {len(self.location_clusters)} geographic clusters using {self.radius} mile radius:"
+            )
         print("-" * 70)
 
         total_images = 0
@@ -1981,7 +2171,7 @@ def main(argv=None, cancel_event=None):
 
     print(f"\nProcessed {files_processed} image files in {elapsed_time:.1f} seconds")
 
-    if gis.sort_by_location:
+    if gis.sort_by_location or gis.single_location:
         # Print cluster summary instead of standard search results
         gis.print_cluster_summary()
     else:
@@ -1989,7 +2179,7 @@ def main(argv=None, cancel_event=None):
 
     if files_processed > 0:
         print(f"Processing rate: {files_processed/elapsed_time:.1f} files/second")
-        if not gis.sort_by_location:
+        if not gis.sort_by_location and not gis.single_location:
             print(f"Match rate: {(images_found/files_processed)*100:.1f}% of processed files")
 
     if files_processed == 0:
