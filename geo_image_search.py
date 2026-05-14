@@ -33,7 +33,6 @@ import argparse
 import csv
 import json
 import os
-import pickle
 import re
 import signal
 import sqlite3
@@ -72,6 +71,31 @@ CAMERA_STYLE_ID = "cameraIcon"
 # Persistent reverse-geocode cache lives in the user's home so it survives
 # across runs and is shared between CLI and GUI.
 GEOCODE_CACHE_FILE = Path.home() / ".geo_image_search_cache.sqlite"
+
+# argparse default for --radius. Sentinel for "user did not supply" is None;
+# we apply this value at attribute-assignment time if nothing overrode it.
+DEFAULT_RADIUS_MILES = 0.05
+
+
+class StartupError(Exception):
+    """Raised when GeoImageSearch can't start: bad config, missing paths,
+    location lookup failed, mutually-exclusive flags, etc. `main()` catches
+    this and reports a clean error instead of a stack trace."""
+
+
+def _next_unique_path(destination, *, padding: int = 3) -> Path:
+    """Return `destination` if it doesn't exist, else append `_NNN` (zero-
+    padded) before the extension. Tries 1..999, then falls back to a unix
+    timestamp so the returned path is always free."""
+    dest = Path(destination)
+    if not dest.exists():
+        return dest
+    stem, suffix, parent = dest.stem, dest.suffix, dest.parent
+    for i in range(1, 1000):
+        candidate = parent / f"{stem}_{i:0{padding}d}{suffix}"
+        if not candidate.exists():
+            return candidate
+    return parent / f"{stem}_{int(time.time())}{suffix}"
 
 
 class _GeocodeCache:
@@ -373,55 +397,50 @@ class GeoImageSearch:  # pylint: disable=too-many-instance-attributes
         """
         Load configuration from TOML file.
 
-        Searches for config file in this order:
-        1. Provided config_path argument
-        2. --config command line argument
-        3. geo_image_search.toml in current directory
-        4. ~/.config/geo_image_search/config.toml
-        5. ~/.geo_image_search.toml
-
-        Args:
-            config_path: Optional path to specific config file
-
-        Returns:
-            dict: Configuration data loaded from TOML file
+        If `config_path` is explicitly provided and does not exist (or fails to
+        parse), this raises StartupError — silent fallthrough to the standard
+        locations would surprise users who passed `--config`. If `config_path`
+        is None, fall back to the standard search order:
+          1. geo_image_search.toml in current directory
+          2. ~/.config/geo_image_search/config.toml
+          3. ~/.geo_image_search.toml
         """
-        config_locations = []
-
-        # Add provided path if given
         if config_path:
-            config_locations.append(Path(config_path))
+            explicit = Path(config_path)
+            if not explicit.exists():
+                raise StartupError(
+                    f"Config file not found: {explicit}"
+                )
+            try:
+                with open(explicit, "rb") as f:
+                    config_data = tomllib.load(f)
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                raise StartupError(f"Could not load config file {explicit}: {e}") from e
+            if self.verbose:
+                print(f"Loaded configuration from: {explicit}")
+            self.config_file = explicit
+            return config_data
 
-        # Add standard locations
-        config_locations.extend(
-            [
-                Path.cwd() / "geo_image_search.toml",
-                Path.home() / ".config" / "geo_image_search" / "config.toml",
-                Path.home() / ".geo_image_search.toml",
-            ]
-        )
-
-        for config_file in config_locations:
-            if config_file.exists():
-                try:
-                    if tomllib:
-                        with open(config_file, "rb") as f:
-                            config_data = tomllib.load(f)
-                        if self.verbose:
-                            print(f"Loaded configuration from: {config_file}")
-                        self.config_file = config_file
-                        return config_data
-                    else:
-                        print(
-                            f"Warning: TOML support not available, skipping config file {config_file}"
-                        )
-                        continue
-                except (OSError, IOError) as e:
-                    print(f"Warning: Could not load config file {config_file}: {e}")
-                    continue
-                except Exception as e:  # Catch TOML decode errors generically
-                    print(f"Warning: Could not parse config file {config_file}: {e}")
-                    continue
+        for config_file in (
+            Path.cwd() / "geo_image_search.toml",
+            Path.home() / ".config" / "geo_image_search" / "config.toml",
+            Path.home() / ".geo_image_search.toml",
+        ):
+            if not config_file.exists():
+                continue
+            try:
+                with open(config_file, "rb") as f:
+                    config_data = tomllib.load(f)
+            except OSError as e:
+                print(f"Warning: Could not load config file {config_file}: {e}")
+                continue
+            except tomllib.TOMLDecodeError as e:
+                print(f"Warning: Could not parse config file {config_file}: {e}")
+                continue
+            if self.verbose:
+                print(f"Loaded configuration from: {config_file}")
+            self.config_file = config_file
+            return config_data
 
         return {}
 
@@ -493,87 +512,47 @@ resume = false          # Resume from previous interrupted search
         except (OSError, IOError) as e:
             print(f"Error creating sample config file: {e}")
 
+    # (section, key, args_attr). Order matches how the keys appear in the
+    # sample TOML; new flags add one line each. "Unset" means args.<attr> is
+    # None (for strings/numbers) or False (for booleans) — since argparse
+    # defaults are None for all string/number args and False for store_true,
+    # we can use one rule for everything.
+    _CONFIG_MAP: tuple[tuple[str, str, str], ...] = (
+        ("search", "address", "address"),
+        ("search", "latitude", "latitude"),
+        ("search", "longitude", "longitude"),
+        ("search", "radius", "radius"),
+        ("search", "cluster_radius", "cluster_radius"),
+        ("search", "far", "far"),
+        ("directories", "root", "root"),
+        ("directories", "output_directory", "output_directory"),
+        ("directories", "find_only", "find_only"),
+        ("directories", "sort_by_location", "sort_by_location"),
+        ("directories", "overwrite", "overwrite"),
+        ("directories", "single_location", "single_location"),
+        ("output", "save_addresses", "save_addresses"),
+        ("output", "export_kml", "export_kml"),
+        ("output", "verbose", "verbose"),
+        ("filters", "date_from", "date_from"),
+        ("filters", "date_to", "date_to"),
+        ("processing", "resume", "resume"),
+    )
+
     def merge_config_with_args(self, config_data: dict, args: argparse.Namespace) -> None:
-        """
-        Merge configuration file data with command-line arguments.
-        Command-line arguments take precedence over config file settings.
+        """Fill in unset args from config_data. CLI values take precedence:
+        we only overwrite when the arg is None (unset string/number) or False
+        (unset store_true flag)."""
+        for section, key, attr in self._CONFIG_MAP:
+            section_data = config_data.get(section, {})
+            if key not in section_data:
+                continue
+            current = getattr(args, attr, None)
+            if current in (None, False):
+                setattr(args, attr, section_data[key])
 
-        Args:
-            config_data: Dictionary loaded from TOML config file
-            args: Parsed command-line arguments
-        """
-        # Search settings
-        search_config = config_data.get("search", {})
-        if not args.address and "address" in search_config:
-            args.address = search_config["address"]
-        if args.latitude is None and "latitude" in search_config:
-            args.latitude = search_config["latitude"]
-        if args.longitude is None and "longitude" in search_config:
-            args.longitude = search_config["longitude"]
-        if args.radius == 0.05 and "radius" in search_config:  # 0.05 is default
-            args.radius = search_config["radius"]
-        if args.cluster_radius is None and "cluster_radius" in search_config:
-            args.cluster_radius = search_config["cluster_radius"]
-        if not args.far and search_config.get("far", False):
-            args.far = search_config["far"]
-
-        # Directory settings
-        dir_config = config_data.get("directories", {})
-        if not args.root and "root" in dir_config:
-            args.root = dir_config["root"]
-        if not args.output_directory and "output_directory" in dir_config:
-            args.output_directory = dir_config["output_directory"]
-        if not args.find_only and dir_config.get("find_only", False):
-            args.find_only = dir_config["find_only"]
-        if not args.sort_by_location and dir_config.get("sort_by_location", False):
-            args.sort_by_location = dir_config["sort_by_location"]
-        if not args.overwrite and dir_config.get("overwrite", False):
-            args.overwrite = dir_config["overwrite"]
-        if not args.single_location and dir_config.get("single_location", False):
-            args.single_location = dir_config["single_location"]
-
-        # Output settings
-        output_config = config_data.get("output", {})
-        if not args.save_addresses and output_config.get("save_addresses", False):
-            args.save_addresses = output_config["save_addresses"]
-        if not args.export_kml and output_config.get("export_kml", False):
-            args.export_kml = output_config["export_kml"]
-        if not args.verbose and output_config.get("verbose", False):
-            args.verbose = output_config["verbose"]
-
-        # Filter settings
-        filter_config = config_data.get("filters", {})
-        if not args.date_from and "date_from" in filter_config:
-            args.date_from = filter_config["date_from"]
-        if not args.date_to and "date_to" in filter_config:
-            args.date_to = filter_config["date_to"]
-
-        # Processing settings
-        proc_config = config_data.get("processing", {})
-        if not args.resume and proc_config.get("resume", False):
-            args.resume = proc_config["resume"]
-
-    def get_opts(self):
-        """
-        Parse command line arguments for the geo image search application.
-
-        Sets up argument parser with options for:
-        - Output directory for copying matched images
-        - Find-only mode (no file operations)
-        - Address matching for reverse geocoding
-        - Saving all image addresses to CSV
-        - Verbose output mode
-        - Root directory for image search (required)
-        - Latitude/longitude coordinates for search center
-        - Search radius in miles (default 0.1)
-        - Far mode to show images outside radius
-
-        Parses arguments and assigns them to instance attributes for use
-        throughout the application. Prints configuration in verbose mode.
-
-        Returns:
-            None: Arguments are stored as instance attributes
-        """
+    @staticmethod
+    def _build_parser() -> argparse.ArgumentParser:
+        """Build the CLI argument parser. No side effects."""
         parser = argparse.ArgumentParser(
             prog="geo_image_search.py",
             description="Finds images based on location data found in .jpeg metadata.",
@@ -590,144 +569,87 @@ resume = false          # Resume from previous interrupted search
             "  4. ~/.geo_image_search.toml",
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
+        parser.add_argument("-o", "--output_directory", action="store",
+                            help="<output directory> to copy images to (optional)")
+        parser.add_argument("-f", "--find_only", action="store_true",
+                            help="(optional) if set, do not copy files or save data.")
+        parser.add_argument("-a", "--address", action="store",
+                            help="(optional) <address> address to match to images")
+        parser.add_argument("-i", "--save_addresses", action="store_true",
+                            help="Save ALL image addresses to CSV file in output directory (requires -o)")
+        parser.add_argument("-v", "--verbose", action="store_true",
+                            help="print additional information")
+        parser.add_argument("-d", "--root", action="store",
+                            help="(required) the <root directory> of where to begin searching for images")
+        parser.add_argument("-t", "--latitude", type=float,
+                            help="(optional) if set, use the decimal latitude to center the search.")
+        parser.add_argument("-g", "--longitude", type=float,
+                            help="(optional) if set, use this decimal longitude to center the search.")
+        parser.add_argument(
+            "-r", "--radius", type=float, default=None,
+            help=f"(optional, defaults to {DEFAULT_RADIUS_MILES}) the radius of the search in miles.",
+        )
+        parser.add_argument("--cluster-radius", type=float,
+                            help="(optional) Radius in YARDS used for grouping when --sort-by-location is set. "
+                                 "Defaults to --radius (which is in miles).")
+        parser.add_argument("-x", "--far", action="store_true",
+                            help="(optional) show images that are further than radius from centerpoint")
+        parser.add_argument("--resume", action="store_true",
+                            help="Resume from a previous interrupted search (uses checkpoint file)")
+        parser.add_argument("--export-kml", action="store_true",
+                            help="Export matched images as KML file for Google Earth")
+        parser.add_argument("--date-from", type=str,
+                            help="Filter images from this date (YYYY-MM-DD format)")
+        parser.add_argument("--date-to", type=str,
+                            help="Filter images to this date (YYYY-MM-DD format)")
+        parser.add_argument("--config", type=str,
+                            help="Path to TOML configuration file (optional)")
+        parser.add_argument("--create-config", type=str, nargs="?", const="geo_image_search.toml",
+                            help="Create a sample configuration file and exit (optionally specify path)")
+        parser.add_argument("--sort-by-location", action="store_true",
+                            help="Group images into geographic clusters (uses --cluster-radius if set, "
+                                 "else --radius). Disk folders only when copying; KML always grouped.")
+        parser.add_argument("--overwrite", action="store_true",
+                            help="Overwrite files in the output directory instead of auto-renaming "
+                                 "duplicates with a numeric suffix.")
+        parser.add_argument("--single-location", action="store_true",
+                            help="Treat the search as a single location rather than discovering clusters. "
+                                 "Requires --address or --latitude/--longitude. All in-radius matches go "
+                                 "into one nested folder built from the structured address "
+                                 "(country/state/city/postcode/road/number). Mutually exclusive with "
+                                 "--sort-by-location.")
+        return parser
 
-        parser.add_argument(
-            "-o",
-            "--output_directory",
-            action="store",
-            help="<output directory> to copy images to (optional)",
-        )
-        parser.add_argument(
-            "-f",
-            "--find_only",
-            action="store_true",
-            help="(optional) if set, do not copy files or save data.",
-        )
-        parser.add_argument(
-            "-a",
-            "--address",
-            action="store",
-            help="(optional) <address> address to match to images",
-        )
-        parser.add_argument(
-            "-i",
-            "--save_addresses",
-            action="store_true",
-            help="Save ALL image addresses to CSV file in output directory (requires -o)",
-        )
-        parser.add_argument(
-            "-v", "--verbose", action="store_true", help="print additional information"
-        )
-        parser.add_argument(
-            "-d",
-            "--root",
-            action="store",
-            help="(required) the <root directory> of where to begin searching for images",
-        )
-        parser.add_argument(
-            "-t",
-            "--latitude",
-            type=float,
-            help="(optional) if set, use the decimal latitude to center the search.",
-        )
-        parser.add_argument(
-            "-g",
-            "--longitude",
-            type=float,
-            help="(optional) if set, use this decimal longitude to center the search.",
-        )
-        parser.add_argument(
-            "-r",
-            "--radius",
-            type=float,
-            default=0.05,
-            help="(optional, defaults to .05) the radius of the search in miles.",
-        )
-        parser.add_argument(
-            "--cluster-radius",
-            type=float,
-            help="(optional) Radius in YARDS used for grouping when "
-            "--sort-by-location is set. Defaults to --radius (which is in miles).",
-        )
-        parser.add_argument(
-            "-x",
-            "--far",
-            action="store_true",
-            help="(optional) show images that are further than radius from centerpoint",
-        )
-        parser.add_argument(
-            "--resume",
-            action="store_true",
-            help="Resume from a previous interrupted search (uses checkpoint file)",
-        )
-        parser.add_argument(
-            "--export-kml",
-            action="store_true",
-            help="Export matched images as KML file for Google Earth",
-        )
-        parser.add_argument(
-            "--date-from",
-            type=str,
-            help="Filter images from this date (YYYY-MM-DD format)",
-        )
-        parser.add_argument(
-            "--date-to",
-            type=str,
-            help="Filter images to this date (YYYY-MM-DD format)",
-        )
-        parser.add_argument(
-            "--config",
-            type=str,
-            help="Path to TOML configuration file (optional)",
-        )
-        parser.add_argument(
-            "--create-config",
-            type=str,
-            nargs="?",
-            const="geo_image_search.toml",
-            help="Create a sample configuration file and exit (optionally specify path)",
-        )
-        parser.add_argument(
-            "--sort-by-location",
-            action="store_true",
-            help="Group images into geographic clusters (uses --cluster-radius if set, "
-            "else --radius). Disk folders only when copying; KML always grouped.",
-        )
-        parser.add_argument(
-            "--overwrite",
-            action="store_true",
-            help="Overwrite files in the output directory instead of auto-renaming "
-            "duplicates with a numeric suffix.",
-        )
-        parser.add_argument(
-            "--single-location",
-            action="store_true",
-            help="Treat the search as a single location rather than discovering "
-            "clusters. Requires --address or --latitude/--longitude. All in-radius "
-            "matches go into one nested folder built from the structured address "
-            "(country/state/city/postcode/road/number). Mutually exclusive with "
-            "--sort-by-location.",
-        )
-
-        args = parser.parse_args(self.argv)
-
-        # Handle config file creation request early
-        if args.create_config:
-            self.create_sample_config(args.create_config)
-            sys.exit(0)
-
-        # Load configuration file first
-        config_path = args.config if hasattr(args, "config") else None
-        self.config_data = self.load_config_file(config_path)
-
-        # Merge config file settings with command line arguments
-        if self.config_data:
-            self.merge_config_with_args(self.config_data, args)
-
-        # Validate required arguments after config file merging
+    def _validate_args(self, args: argparse.Namespace) -> None:
+        """Raise StartupError for any invalid CLI/config combination."""
         if not args.root:
-            parser.error("the following arguments are required: -d/--root")
+            raise StartupError("Missing required argument: -d/--root")
 
+        if args.save_addresses and not args.output_directory:
+            raise StartupError("--save_addresses requires --output_directory to be specified")
+
+        if args.sort_by_location and args.single_location:
+            raise StartupError("--single-location and --sort-by-location are mutually exclusive")
+
+        if args.sort_by_location and not args.find_only and not args.output_directory:
+            raise StartupError("--sort-by-location requires --output_directory when copying files")
+
+        if args.single_location:
+            if not args.address and (args.latitude is None or args.longitude is None):
+                raise StartupError("--single-location requires --address or --latitude/--longitude")
+            if not args.find_only and not args.output_directory:
+                raise StartupError("--single-location requires --output_directory when copying files")
+
+    def _parse_date(self, value: str | None, flag: str) -> "datetime.date | None":
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            raise StartupError(f"Invalid date format for {flag}: {value}. Use YYYY-MM-DD") from None
+
+    def _assign_attrs(self, args: argparse.Namespace) -> None:
+        """Copy parsed args onto self, applying defaults and unit conversions."""
         self.address = args.address
         self.user_output_directory = args.output_directory
         self.find_only = args.find_only
@@ -736,71 +658,41 @@ resume = false          # Resume from previous interrupted search
         self.root_images_directory = args.root
         self.lat = args.latitude
         self.lon = args.longitude
-        self.radius = args.radius
-        # cluster_radius is entered in YARDS; we store it in miles so it's
-        # directly comparable to geopy's distance.miles in find_or_create_cluster.
+        self.radius = args.radius if args.radius is not None else DEFAULT_RADIUS_MILES
+        # cluster_radius is entered in YARDS; store as miles so it's directly
+        # comparable to geopy's distance.miles in find_or_create_cluster.
         self.cluster_radius = (
             args.cluster_radius / 1760.0 if args.cluster_radius is not None else None
         )
+        self.far = args.far
         self.resume = args.resume
         self.sort_by_location = args.sort_by_location
         self.export_kml = args.export_kml
         self.overwrite = args.overwrite
         self.single_location = args.single_location
+        self.date_from = self._parse_date(args.date_from, "--date-from")
+        self.date_to = self._parse_date(args.date_to, "--date-to")
 
-        # Parse date filters
-        self.date_from = None
-        self.date_to = None
-        if args.date_from:
-            try:
-                self.date_from = datetime.strptime(args.date_from, "%Y-%m-%d").date()
-            except ValueError:
-                print(
-                    f"Error: Invalid date format for --date-from: {args.date_from}. Use YYYY-MM-DD"
-                )
-                sys.exit(11)
-        if args.date_to:
-            try:
-                self.date_to = datetime.strptime(args.date_to, "%Y-%m-%d").date()
-            except ValueError:
-                print(f"Error: Invalid date format for --date-to: {args.date_to}. Use YYYY-MM-DD")
-                sys.exit(12)
+    def get_opts(self) -> None:
+        """Parse argv, merge with TOML config, validate, and assign onto self.
 
-        # Initialize checkpoint tracking
-        self.checkpoint_file = None
-        self.processed_files_set = set()
-        self.last_checkpoint_time = time.time()
+        Raises StartupError on any invalid input. The --create-config flag
+        short-circuits the entire pipeline with sys.exit(0) after writing the
+        sample file (intended user-facing behavior).
+        """
+        parser = self._build_parser()
+        args = parser.parse_args(self.argv)
 
-        # Validate save_addresses requires output directory
-        if self.image_addresses and not self.user_output_directory:
-            print("Error: --save_addresses requires --output_directory to be specified")
-            sys.exit(10)
+        if args.create_config:
+            self.create_sample_config(args.create_config)
+            sys.exit(0)
 
-        # Validate sort_by_location requirements
-        if self.sort_by_location:
-            if not self.find_only and not self.user_output_directory:
-                print(
-                    "Error: --sort-by-location requires --output_directory when copying files"
-                )
-                sys.exit(16)
-            if self.verbose:
-                print("Location-based sorting enabled: grouping images by geographic clusters")
+        self.config_data = self.load_config_file(args.config)
+        if self.config_data:
+            self.merge_config_with_args(self.config_data, args)
 
-        # Validate single_location requirements
-        if self.single_location:
-            if self.sort_by_location:
-                print("Error: --single-location and --sort-by-location are mutually exclusive")
-                sys.exit(18)
-            if not self.address and (self.lat is None or self.lon is None):
-                print(
-                    "Error: --single-location requires --address or --latitude/--longitude"
-                )
-                sys.exit(17)
-            if not self.find_only and not self.user_output_directory:
-                print(
-                    "Error: --single-location requires --output_directory when copying files"
-                )
-                sys.exit(19)
+        self._validate_args(args)
+        self._assign_attrs(args)
 
         if self.verbose:
             print(f"Configuration file: {self.config_file or 'None'}")
@@ -813,6 +705,8 @@ resume = false          # Resume from previous interrupted search
             print(f"Latitude: {self.lat}")
             print(f"Longitude: {self.lon}")
             print(f"Radius: {self.radius}")
+            if self.sort_by_location:
+                print("Location-based sorting enabled: grouping images by geographic clusters")
             if self.config_data:
                 print("Active configuration sections:", list(self.config_data.keys()))
 
@@ -839,66 +733,36 @@ resume = false          # Resume from previous interrupted search
         return Path(filename).suffix.lower() in GeoImageSearch.SUPPORTED_EXTENSIONS
 
     def set_root_images_directory(self):
-        """
-        Set and validate the root images directory.
-
-        This method validates that a root images directory has been specified,
-        normalizes the path, and checks that the directory exists on the filesystem.
-
-        Raises:
-            SystemExit: With code 2 if no root images directory is specified.
-            SystemExit: With code 8 if the specified directory does not exist.
-
-        Side Effects:
-            - Updates self.root_images_directory with the normalized path
-            - Prints error messages to stdout before exiting on failure
-        """
+        """Normalize and validate `self.root_images_directory`. Raises
+        StartupError if unset or pointing at a non-existent path."""
         if not self.root_images_directory:
-            print("No images root directory specified.  --images-root-directory is not optional")
-            sys.exit(2)
+            raise StartupError(
+                "No images root directory specified. -d/--root is not optional."
+            )
 
         self.root_images_directory = self.normalize_path(self.root_images_directory)
 
         if not os.path.exists(self.root_images_directory):
-            print(f"Root directory does not exist: {self.root_images_directory}")
-            sys.exit(8)
+            raise StartupError(
+                f"Root directory does not exist: {self.root_images_directory}"
+            )
 
     def fix_cdata_in_kml(self, kml_path):
         with open(kml_path, "r", encoding="utf-8") as f:
             kml_content = f.read()
         kml_content = kml_content.replace("&lt;", "<").replace("&gt;", ">")
-        kml_content
         with open(kml_path, "w", encoding="utf-8") as f:
             f.write(kml_content)
 
     def set_output_directory(self):
+        """Pick the effective output directory.
+
+        - If the user supplied --output_directory, normalize it and use it
+          verbatim (also used for CSV/KML even in find-only mode).
+        - In find-only mode without an output dir, set the sentinel
+          "Do Not Save" to signal "no file operations".
+        - Otherwise raise StartupError: we need one or the other.
         """
-        Configure the output directory for processed images based on user settings.
-
-        This method handles two distinct modes of operation:
-        1. Normal mode: Creates an output directory structure under root_images_directory/geo_loc/
-        2. Find-only mode: Sets output to indicate no saving should occur
-
-        In normal mode (find_only=False):
-        - Requires user_output_directory to be specified
-        - Normalizes the user-provided output directory path
-        - Creates a sanitized directory name by replacing invalid characters with underscores
-        - Constructs final output path as: root_images_directory/geo_loc/sanitized_name
-
-        In find-only mode (find_only=True):
-        - Ensures no output directory is specified by user
-        - Sets output_directory to "Do Not Save" to indicate no file operations
-
-        Raises:
-            SystemExit: With code 3 if no output directory specified in normal mode
-            SystemExit: With code 4 if output directory specified in find-only mode
-
-        Side Effects:
-            - Updates self.output_directory with the determined output path
-            - Prints status messages if verbose mode is enabled
-            - May normalize self.user_output_directory path
-        """
-
         if self.user_output_directory:
             self.user_output_directory = self.normalize_path(self.user_output_directory)
             self.output_directory = self.user_output_directory
@@ -914,8 +778,9 @@ resume = false          # Resume from previous interrupted search
             print("Finding and outputting image path only.")
             self.output_directory = "Do Not Save"
         else:
-            print("No output directory specified and not find only. Use one or the other.")
-            sys.exit(3)
+            raise StartupError(
+                "No output directory specified and not find-only. Use one or the other."
+            )
 
     def set_directories(self):
         """
@@ -994,7 +859,6 @@ resume = false          # Resume from previous interrupted search
         self.printed_directory = {}
         self.csv_data = []  # Store image data for CSV export
         self.last_geocode_time = 0  # Rate limiting for geocoding
-        print("ARGV        :", self.argv)
         self.loc_format = "{0:}: {1:.7n}, {2:.7n} ({3:.3n})"
         self.config_file = None
         self.config_data = {}
@@ -1026,16 +890,16 @@ resume = false          # Resume from previous interrupted search
                 try:
                     self.location = self.geolocator.geocode(query=self.address)
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
-                    print(f"Geocoding failed: {e}")
-                    sys.exit(6)
+                    raise StartupError(f"Geocoding failed: {e}") from e
             else:
                 try:
                     self.location = self.geolocator.reverse(
                         query=f"{self.lat}, {self.lon}"
                     )
                 except (GeocoderTimedOut, GeocoderServiceError) as e:
-                    print(f"Latitude, Longitude does not return a valid location object: {e}")
-                    sys.exit(7)
+                    raise StartupError(
+                        f"Latitude/longitude did not return a valid location: {e}"
+                    ) from e
 
             if self.location:
                 self.search_coords = (self.location.latitude, self.location.longitude)
@@ -1068,16 +932,14 @@ resume = false          # Resume from previous interrupted search
                         f"{nested or self._single_location_display}"
                     )
             else:
-                print("No location from Nominatim")
-                sys.exit(9)
+                raise StartupError("No location returned from Nominatim.")
         elif self.sort_by_location:
             print("Location-based sorting mode: grouping all images by geographic clusters")
             if self.verbose:
                 cluster_radius_miles = self.cluster_radius or self.radius
                 print(f"Using cluster radius of {cluster_radius_miles} miles for grouping")
         else:
-            print("No address or coordinates provided for search center.")
-            sys.exit(9)
+            raise StartupError("No address or coordinates provided for search center.")
 
         self.set_directories()
 
@@ -1235,7 +1097,7 @@ resume = false          # Resume from previous interrupted search
                 print(f"  -> {filename}: Date {image_date} is within range")
             return True
 
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError) as e:
             if self.verbose:
                 print(f"  -> {filename}: Error checking date: {e}")
             return False
@@ -1307,14 +1169,8 @@ resume = false          # Resume from previous interrupted search
         source_path = os.path.join(dir_path, filename)
         destination = os.path.join(cluster_folder, filename)
 
-        # Handle duplicate filenames unless overwriting was explicitly requested.
         if not self.overwrite:
-            counter = 1
-            original_destination = destination
-            while os.path.exists(destination):
-                name, ext = os.path.splitext(original_destination)
-                destination = f"{name}_{counter:03d}{ext}"
-                counter += 1
+            destination = str(_next_unique_path(destination))
 
         try:
             if not self.find_only:
@@ -1387,17 +1243,12 @@ resume = false          # Resume from previous interrupted search
 
                     print(f"   + {filename} {distance_miles:.2f}mi")
                 if self.output_directory and not self.find_only:
-                    destination = f"{self.output_directory}/{filename}"
-
-                    # Handle duplicate filenames unless overwriting was requested.
-                    if not self.overwrite and os.path.exists(destination):
-                        base, ext = os.path.splitext(filename)
-                        counter = 1
-                        while os.path.exists(f"{self.output_directory}/{base}_{counter}{ext}"):
-                            counter += 1
-                        destination = f"{self.output_directory}/{base}_{counter}{ext}"
-                        if self.verbose:
-                            print(f"   Renamed to avoid overwrite: {base}_{counter}{ext}")
+                    destination = os.path.join(self.output_directory, filename)
+                    if not self.overwrite:
+                        unique = _next_unique_path(destination)
+                        if str(unique) != destination and self.verbose:
+                            print(f"   Renamed to avoid overwrite: {unique.name}")
+                        destination = str(unique)
 
                     copyfile(source_path, destination)
 
@@ -1550,18 +1401,14 @@ resume = false          # Resume from previous interrupted search
 
     @staticmethod
     def _next_fallback_csv_path(canonical: Path) -> Path:
-        """Find image_addresses_NNN.csv beside `canonical`, where NNN is the
-        lowest 3-digit number for which the file doesn't yet exist. If 001-999
-        are all taken (highly unlikely), fall back to a timestamp suffix so
-        the run's data is still saved somewhere."""
-        stem = canonical.stem
-        suffix = canonical.suffix
-        parent = canonical.parent
-        for i in range(1, 1000):
-            candidate = parent / f"{stem}_{i:03d}{suffix}"
-            if not candidate.exists():
-                return candidate
-        return parent / f"{stem}_{int(time.time())}{suffix}"
+        """Find image_addresses_NNN.csv beside `canonical`. Returned path is
+        guaranteed not to exist; caller has already determined `canonical`
+        itself is unusable (locked or otherwise)."""
+        # _next_unique_path checks whether `canonical` itself is free; here we
+        # know it's effectively taken, so seed with a name we know exists.
+        if not canonical.exists():
+            return canonical
+        return _next_unique_path(canonical)
 
     @staticmethod
     def _atomic_replace_with_retry(
@@ -1693,7 +1540,7 @@ resume = false          # Resume from previous interrupted search
 
             self.fix_cdata_in_kml(kml_path)
             print(f"Exported {len(self.kml_results)} image locations to {kml_path}")
-        except Exception as e:
+        except (OSError, ValueError, TypeError, AttributeError) as e:
             print(f"Error during KML export: {e}")
 
     def add_kml_result(
@@ -1727,46 +1574,48 @@ resume = false          # Resume from previous interrupted search
         )
 
     def get_checkpoint_path(self):
-        """Get the path for the checkpoint file."""
+        """Path for the checkpoint file. Stored as JSON to avoid pickle's
+        arbitrary-code-execution risk on load."""
         if self.output_directory == "Do Not Save":
-            # Use a temporary directory for find-only mode
             checkpoint_dir = Path.home() / ".geo_image_search_checkpoints"
             checkpoint_dir.mkdir(exist_ok=True)
-            # Create unique filename based on search parameters
             search_id = f"{abs(hash((str(self.search_coords), self.radius, str(self.root_images_directory))))}"
-            return checkpoint_dir / f"checkpoint_{search_id}.pkl"
+            return checkpoint_dir / f"checkpoint_{search_id}.json"
         else:
-            return Path(self.output_directory) / "checkpoint.pkl"
+            return Path(self.output_directory) / "checkpoint.json"
 
     def save_checkpoint(self):
         """Save current progress to checkpoint file."""
         if not self.checkpoint_file:
             self.checkpoint_file = self.get_checkpoint_path()
 
-        # Ensure checkpoint directory exists
         self.checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
 
         checkpoint_data = {
-            "processed_files": self.processed_files_set,
+            # set -> list for JSON; restored back to set on load.
+            "processed_files": sorted(self.processed_files_set),
             "csv_data": self.csv_data,
-            "search_coords": self.search_coords,
+            # tuple -> list for JSON; restored to tuple on load for == comparison.
+            "search_coords": list(self.search_coords) if self.search_coords else None,
             "radius": self.radius,
             "root_images_directory": str(self.root_images_directory),
             "timestamp": time.time(),
-            "version": "1.0",  # For future compatibility
+            "version": "2",
         }
 
         try:
-            with open(self.checkpoint_file, "wb") as f:
-                pickle.dump(checkpoint_data, f)
+            with open(self.checkpoint_file, "w", encoding="utf-8") as f:
+                json.dump(checkpoint_data, f)
             if self.verbose:
                 print(f"Checkpoint saved: {len(self.processed_files_set)} files processed")
-        except (OSError, IOError) as e:
+        except (OSError, TypeError) as e:
             if self.verbose:
                 print(f"Warning: Could not save checkpoint: {e}")
 
     def load_checkpoint(self):
-        """Load progress from checkpoint file."""
+        """Load progress from checkpoint file. Returns True on successful
+        resume; False (and starts fresh) if the file is missing, malformed,
+        or its search parameters don't match the current run."""
         if not self.checkpoint_file:
             self.checkpoint_file = self.get_checkpoint_path()
 
@@ -1776,29 +1625,32 @@ resume = false          # Resume from previous interrupted search
             return False
 
         try:
-            with open(self.checkpoint_file, "rb") as f:
-                checkpoint_data = pickle.load(f)
+            with open(self.checkpoint_file, "r", encoding="utf-8") as f:
+                checkpoint_data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not load checkpoint file: {e}. Starting fresh.")
+            return False
 
-            # Validate checkpoint compatibility
+        try:
+            saved_coords = checkpoint_data.get("search_coords")
+            saved_coords_tuple = tuple(saved_coords) if saved_coords else None
             if (
-                checkpoint_data.get("search_coords") != self.search_coords
+                saved_coords_tuple != self.search_coords
                 or checkpoint_data.get("radius") != self.radius
                 or checkpoint_data.get("root_images_directory") != str(self.root_images_directory)
             ):
                 print("Warning: Checkpoint parameters don't match current search. Starting fresh.")
                 return False
 
-            # Restore state
-            self.processed_files_set = checkpoint_data.get("processed_files", set())
+            self.processed_files_set = set(checkpoint_data.get("processed_files", []))
             self.csv_data = checkpoint_data.get("csv_data", [])
 
             print(
                 f"Resumed from checkpoint: {len(self.processed_files_set)} files already processed"
             )
             return True
-
-        except (OSError, IOError, pickle.PickleError) as e:
-            print(f"Warning: Could not load checkpoint file: {e}. Starting fresh.")
+        except (TypeError, ValueError) as e:
+            print(f"Warning: Malformed checkpoint file: {e}. Starting fresh.")
             return False
 
     def should_save_checkpoint(self, files_processed):
@@ -2174,11 +2026,11 @@ def main(argv=None, cancel_event=None):
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGINT, signal_handler)
 
-    print(f"1. {hasattr(gis, 'search_coords')=}")
-
-    gis.startup()
-
-    print(f"2. {hasattr(gis, 'search_coords')=}")
+    try:
+        gis.startup()
+    except StartupError as e:
+        print(f"Error: {e}")
+        sys.exit(2)
 
     print(f"Scanning directory: {gis.root_images_directory}")
     print(f"Search center: {gis.search_coords}")
