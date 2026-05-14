@@ -216,22 +216,26 @@ class App:
         self.entries["longitude"].configure(state=state)
 
     def _wire_mutex_exclusion(self) -> None:
-        """Disable one of the mutex-paired checkboxes when the other is on."""
-        for key in _MUTEX_PAIR:
-            self.vars[key].trace_add("write", lambda *_a: self._update_mutex())
-        self._update_mutex()
-
-    def _update_mutex(self) -> None:
+        """Behave like a deselectable radio: turning on one mutex-paired
+        checkbox turns the other off; clicking the active one deactivates it.
+        Both checkboxes remain enabled so a single click can switch modes."""
         a, b = _MUTEX_PAIR
-        va = bool(self.vars[a].get())
-        vb = bool(self.vars[b].get())
-        # Defensive: if a hand-edited settings file turned both on, clear
-        # the first. The re-fired trace settles state.
-        if va and vb:
+        # Defensive: if a hand-edited settings file ended up with both on,
+        # clear the first so we start in a sane state.
+        if bool(self.vars[a].get()) and bool(self.vars[b].get()):
             self.vars[a].set(False)
-            return
-        self.bool_widgets[a].configure(state="disabled" if vb else "normal")
-        self.bool_widgets[b].configure(state="disabled" if va else "normal")
+        for key in _MUTEX_PAIR:
+            self.vars[key].trace_add(
+                "write", lambda *_a, k=key: self._on_mutex_toggle(k)
+            )
+
+    def _on_mutex_toggle(self, just_changed_key: str) -> None:
+        if not bool(self.vars[just_changed_key].get()):
+            return  # turning off has no side effect on the other
+        a, b = _MUTEX_PAIR
+        other = b if just_changed_key == a else a
+        if bool(self.vars[other].get()):
+            self.vars[other].set(False)
 
     def show_preferences(self) -> None:
         win = tk.Toplevel(self.root)
