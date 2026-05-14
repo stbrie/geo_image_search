@@ -11,11 +11,62 @@ The author uses this on a windows machine with LSB/debian.
 
 Requires: geopy, exif
 
-usage: python3 geo_image_search.py  \
-       --address=<address to search for> \
-       --output-directory=<directory relative to images-root-directory> \
-       --find-only [not yet implemented] \
-       --image-addresses [not yet implemented] \
-       --verbose [print some extra information]
-       --images-root-directory=<top directory of images to search through>
+# Python venv on Windows
+
+## Setup
+
+```powershell
+python -m venv venv
+```
+
+---
+
+## Activating in PowerShell
+
+First, allow local scripts to run (one-time):
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Then activate:
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+Your prompt should show `(venv)`. Verify:
+```powershell
+where.exe python
+```
+
+---
+
+## Activating in cmd.exe
+
+No policy change needed — just run the batch file:
+```cmd
+venv\Scripts\activate.bat
+```
+
+Your prompt should show `(venv)`. Verify:
+```cmd
+where python
+```
+
+---
+
+## Notes
+
+- `.bat` activation does **not** work in PowerShell — the environment change won't stick.
+- `where python` in PowerShell is an alias for `Where-Object` and won't work. Use `where.exe python`.
+- The venv's Python is a copy of whichever Python created it — make sure you're using a real install from python.org or the Microsoft Store, not a stub.
+- To deactivate in either shell: `deactivate`
+
+---
+
+## Install dependencies
+
+Once activated:
+```
+pip install -r requirements.txt
+```
 
