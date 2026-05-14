@@ -1503,29 +1503,65 @@ resume = false          # Resume from previous interrupted search
             "address",
             "cluster_folder",
         ]
+        # Phase 1: build the temp file. If this fails, the data is suspect
+        # and we don't want to save it under any name.
         try:
             with open(tmp_path, "w", newline="", encoding="utf-8") as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(self.csv_data)
-            self._atomic_replace_with_retry(tmp_path, csv_path)
-            print(f"Exported {len(self.csv_data)} image addresses to {csv_path}")
-        except PermissionError as e:
-            print(
-                f"Error writing CSV file: {csv_path} appears to be locked "
-                f"(open in Excel, or being synced by OneDrive/Dropbox?). "
-                f"Close it and re-run. Underlying error: {e}"
-            )
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
         except (OSError, IOError, ValueError) as e:
             print(f"Error writing CSV file: {e}")
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            return
+
+        # Phase 2: swap into place. If the canonical name is locked, save
+        # to image_addresses_NNN.csv beside it so the run's data isn't lost.
+        try:
+            self._atomic_replace_with_retry(tmp_path, csv_path)
+            print(f"Exported {len(self.csv_data)} image addresses to {csv_path}")
+            return
+        except PermissionError as e:
+            fallback = self._next_fallback_csv_path(csv_path)
+            try:
+                tmp_path.replace(fallback)
+                print(
+                    f"{csv_path.name} appears to be locked "
+                    f"(open in Excel, or being synced by OneDrive/Dropbox?). "
+                    f"Saved {len(self.csv_data)} rows to {fallback} instead. "
+                    f"Underlying error: {e}"
+                )
+                return
+            except OSError as e2:
+                print(
+                    f"Error writing CSV file: both {csv_path.name} and "
+                    f"{fallback.name} failed ({e2})."
+                )
+        except OSError as e:
+            print(f"Error replacing CSV file: {e}")
+
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _next_fallback_csv_path(canonical: Path) -> Path:
+        """Find image_addresses_NNN.csv beside `canonical`, where NNN is the
+        lowest 3-digit number for which the file doesn't yet exist. If 001-999
+        are all taken (highly unlikely), fall back to a timestamp suffix so
+        the run's data is still saved somewhere."""
+        stem = canonical.stem
+        suffix = canonical.suffix
+        parent = canonical.parent
+        for i in range(1, 1000):
+            candidate = parent / f"{stem}_{i:03d}{suffix}"
+            if not candidate.exists():
+                return candidate
+        return parent / f"{stem}_{int(time.time())}{suffix}"
 
     @staticmethod
     def _atomic_replace_with_retry(
