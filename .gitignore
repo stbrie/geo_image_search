@@ -20,4 +20,11 @@ Thumbs.db
 # This project
 geo_image_search.toml
 checkpoint.pkl
+checkpoint.json
 .geo_image_search_checkpoints/
+
+# Nuitka build artifacts
+*.build/
+*.dist/
+*.onefile-build/
+geo_image_search.exe

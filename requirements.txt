@@ -18,3 +18,8 @@ pygeoif==1.6.0
 shapely==2.1.2
 # lxml is optional for fastkml but required for pretty-printed KML output.
 lxml==6.1.0
+
+# Build-time only: used by build.ps1 to compile geo_image_search.exe.
+# Not needed at runtime. Requires a Microsoft C/C++ compiler (Visual
+# Studio Build Tools or full VS) — Nuitka does NOT install one.
+nuitka==4.1
