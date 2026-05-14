@@ -1614,15 +1614,37 @@ resume = false          # Resume from previous interrupted search
 
             k.append(doc)
 
+            # Cache of intermediate KML Folders keyed by their full path tuple,
+            # so siblings sharing ancestors (e.g. two clusters in the same
+            # city) reuse one parent chain instead of duplicating it.
+            folder_cache: dict[tuple[str, ...], Folder] = {}
+
+            def parent_folder_for(parent_parts: tuple[str, ...]) -> Folder:
+                if not parent_parts:
+                    return doc
+                if parent_parts in folder_cache:
+                    return folder_cache[parent_parts]
+                parent = parent_folder_for(parent_parts[:-1])
+                new_folder = Folder(name=parent_parts[-1])
+                parent.append(new_folder)
+                folder_cache[parent_parts] = new_folder
+                return new_folder
+
             # Create folder for search area
             for folder_name, results in self.kml_results.items():
                 cluster_name = self.get_cluster_name_by_folder(folder_name)
+                parts = self.get_cluster_path_parts_by_folder(folder_name)
+
+                if parts and len(parts) > 1:
+                    parent_folder = parent_folder_for(tuple(parts[:-1]))
+                else:
+                    parent_folder = doc
 
                 search_folder = Folder(
                     name=cluster_name,
                     description=f"Search center and radius ({self.radius} miles)",
                 )
-                doc.append(search_folder)
+                parent_folder.append(search_folder)
 
                 # Add search center point
                 if self.search_coords:
@@ -1878,6 +1900,25 @@ resume = false          # Resume from previous interrupted search
         return parts or None
 
     @classmethod
+    def _flatten_path_parts_to_folder_name(cls, parts) -> str:
+        """Join structured address parts into one flat folder-name segment.
+        Each part is normalized (illegal chars and whitespace -> underscore),
+        then joined with `_`. Allow up to 200 chars (vs sanitize_folder_name's
+        100) because a full address legitimately runs longer than a city
+        name."""
+        if not parts:
+            return "Unknown_Location"
+        cleaned = [str(p).strip() for p in parts if p]
+        if not cleaned:
+            return "Unknown_Location"
+        joined = "_".join(cleaned)
+        safe = re.sub(r'[<>:"/\\|?*]', "_", joined)
+        safe = re.sub(r"[_\s]+", "_", safe).strip("_")
+        if len(safe) > 200:
+            safe = safe[:200]
+        return safe or "Unknown_Location"
+
+    @classmethod
     def _build_single_location_display(cls, raw, fallback):
         """Human-readable one-line address for KML / verbose output. Falls
         back to the supplied string when Nominatim couldn't be parsed."""
@@ -1919,20 +1960,22 @@ resume = false          # Resume from previous interrupted search
                 return self.location_clusters[0]["folder_path"]
 
             parts = self._single_location_path_parts or []
-            safe_parts = [self.sanitize_folder_name(p) for p in parts if p]
-            relative = os.path.join(*safe_parts) if safe_parts else "Single_Location"
-            cluster_folder = os.path.join(self.output_directory, relative)
+            flat_name = (
+                self._flatten_path_parts_to_folder_name(parts) if parts else "Single_Location"
+            )
+            cluster_folder = os.path.join(self.output_directory, flat_name)
 
             if not self.find_only and self.output_directory != "Do Not Save":
                 os.makedirs(cluster_folder, exist_ok=True)
 
-            name = self._single_location_display or relative
+            name = self._single_location_display or flat_name
             self.location_clusters.append(
                 {
                     "name": name,
                     "center": self.search_coords or image_coords,
                     "folder_path": cluster_folder,
                     "image_count": 0,
+                    "path_parts": parts or None,
                 }
             )
             if self.verbose:
@@ -1963,20 +2006,30 @@ resume = false          # Resume from previous interrupted search
         avg_lat = sum(c[0] for c in coords_list) / len(coords_list)
         avg_lon = sum(c[1] for c in coords_list) / len(coords_list)
 
-        placename = None
         address, raw = self._reverse_geocode(avg_lat, avg_lon)
-        if raw:
-            addr_dict = raw.get("address", {}) if isinstance(raw, dict) else {}
+        parts = self._build_single_location_path_parts(raw) if raw else None
+
+        if parts:
+            safe_name = self._flatten_path_parts_to_folder_name(parts)
+            fallback_display = address.split(",")[0] if address else safe_name
+            cluster_name = self._build_single_location_display(raw, fallback_display)
+        else:
+            # Reverse geocode returned nothing useful — fall back to the old
+            # placename heuristic so we still get a meaningful folder.
+            addr_dict = self._nominatim_address_dict(raw)
             placename = (
                 addr_dict.get("neighbourhood")
                 or addr_dict.get("suburb")
                 or addr_dict.get("city")
             )
-        if not placename and address:
-            placename = address.split(",")[0]
+            if not placename and address:
+                placename = address.split(",")[0]
+            cluster_name = (
+                placename
+                or f"Cluster_{len(self.location_clusters) + 1}_{lat:.3f}_{lon:.3f}"
+            )
+            safe_name = self.sanitize_folder_name(cluster_name)
 
-        cluster_name = placename or f"Cluster_{len(self.location_clusters) + 1}_{lat:.3f}_{lon:.3f}"
-        safe_name = self.sanitize_folder_name(cluster_name)
         cluster_folder = os.path.join(self.output_directory, safe_name)
 
         # Only create a real directory when we'll actually copy files into it.
@@ -1990,6 +2043,7 @@ resume = false          # Resume from previous interrupted search
             "center": image_coords,
             "folder_path": cluster_folder,
             "image_count": 0,
+            "path_parts": parts,
         }
         self.location_clusters.append(new_cluster)
 
@@ -2003,6 +2057,14 @@ resume = false          # Resume from previous interrupted search
             if cluster["folder_path"] == folder_path:
                 return cluster["name"]
         return os.path.basename(folder_path)
+
+    def get_cluster_path_parts_by_folder(self, folder_path: str):
+        """Return the structured address parts stored on a cluster, or None
+        when the cluster lacks them (e.g., reverse-geocode failed)."""
+        for cluster in self.location_clusters:
+            if cluster["folder_path"] == folder_path:
+                return cluster.get("path_parts")
+        return None
 
     def increment_cluster_count(self, folder_path: str):
         """
