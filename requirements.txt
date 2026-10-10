@@ -6,7 +6,7 @@
 #   .venv\Scripts\python -m pip install -r requirements.txt   (Windows)
 #   .venv/bin/python -m pip install -r requirements.txt       (macOS/Linux)
 
-geopy==2.4.1
+geopy==2.5.0
 exif==1.6.1
 
 # HEIC support — registers .heic/.heif as PIL openers. Pulls in pillow.
